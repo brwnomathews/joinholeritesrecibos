@@ -283,45 +283,67 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
 # ==========================================
 st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout="wide")
 st.title("📄 Processador e Unificador de PDFs")
-st.markdown("Faça o upload dos seus PDFs misturados. O sistema fará a triagem **página por página**, processamento e união automaticamente.")
 
-uploaded_files = st.file_uploader("Selecione os arquivos PDF", type=["pdf"], accept_multiple_files=True)
+# Modificamos o texto para avisar ao usuário sobre a nova funcionalidade
+st.markdown("Faça o upload dos seus PDFs soltos **OU** suba um único arquivo **.zip** contendo todos eles juntos!")
+
+# 1. Adicionamos a extensão "zip" nos tipos permitidos
+uploaded_files = st.file_uploader("Selecione os arquivos (PDF ou ZIP)", type=["pdf", "zip"], accept_multiple_files=True)
 
 if st.button("🚀 Iniciar Processamento"):
     if not uploaded_files:
-        st.warning("Por favor, faça o upload de pelo menos um arquivo PDF.")
+        st.warning("Por favor, faça o upload de pelo menos um arquivo.")
     else:
         st.markdown("### 🖥️ Terminal de Processamento")
         app_logger = StreamlitLogger()
         
         holerites_separados = {}
         comprovantes_separados = {}
-        
-        # Cria um PDF em branco para ir guardando as páginas não classificadas
         doc_nao_classificadas = fitz.open()
         
-        # Processamento Misto (Triagem página a página)
         app_logger.print(">>> INICIANDO TRIAGEM E EXTRAÇÃO...")
+        
         for file in uploaded_files:
-            file_bytes = file.read()
-            # Passamos o doc_nao_classificadas para a função poder adicionar páginas nele
-            processar_pdf_misto_memoria(file_bytes, file.name, app_logger, holerites_separados, comprovantes_separados, doc_nao_classificadas)
+            # ---------------------------------------------------------
+            # NOVA LÓGICA: Descompactação de ZIP em memória
+            # ---------------------------------------------------------
+            if file.name.lower().endswith('.zip'):
+                app_logger.print(f"\n📦 Abrindo arquivo ZIP: '{file.name}'")
+                try:
+                    # Lê o ZIP usando a biblioteca padrão do Python
+                    with zipfile.ZipFile(file, 'r') as z:
+                        for zip_info in z.infolist():
+                            # Filtra para ler apenas PDFs (ignorando lixos de sistema como __MACOSX)
+                            if zip_info.filename.lower().endswith('.pdf') and not zip_info.filename.startswith('__MACOSX'):
+                                # Extrai o PDF em bytes e joga na nossa esteira
+                                pdf_bytes = z.read(zip_info.filename)
+                                # Usamos osplit para pegar só o nome final caso esteja dentro de pastas no zip
+                                nome_limpo = zip_info.filename.split('/')[-1]
+                                processar_pdf_misto_memoria(pdf_bytes, nome_limpo, app_logger, holerites_separados, comprovantes_separados, doc_nao_classificadas)
+                except zipfile.BadZipFile:
+                    app_logger.print(f"❌ Erro: O arquivo '{file.name}' parece não ser um ZIP válido.")
+            
+            # ---------------------------------------------------------
+            # LÓGICA ANTIGA MANTIDA: Processamento de PDFs soltos
+            # ---------------------------------------------------------
+            elif file.name.lower().endswith('.pdf'):
+                file_bytes = file.read()
+                processar_pdf_misto_memoria(file_bytes, file.name, app_logger, holerites_separados, comprovantes_separados, doc_nao_classificadas)
             
         # União
         app_logger.print("\n>>> UNINDO HOLERITES E COMPROVANTES...")
         pdfs_finais = unir_arquivos_memoria(holerites_separados, comprovantes_separados, app_logger)
         
-        # Verifica se alguma página foi enviada para o documento de não classificadas
+        # Verifica páginas não classificadas
         if len(doc_nao_classificadas) > 0:
             app_logger.print(f"\n>>> FORAM ENCONTRADAS {len(doc_nao_classificadas)} PÁGINA(S) NÃO CLASSIFICADA(S)!")
             pdfs_finais["NAO_CLASSIFICADAS.pdf"] = doc_nao_classificadas.write()
         
-        # Fecha o documento auxiliar
         doc_nao_classificadas.close()
         
-        app_logger.print("\n>>> FINALIZADO! Preparando arquivo ZIP...")
+        app_logger.print("\n>>> FINALIZADO! Preparando arquivo ZIP de saída...")
 
-        # Geração do ZIP
+        # Geração do ZIP de saída
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for nome_arquivo, pdf_bytes in pdfs_finais.items():
