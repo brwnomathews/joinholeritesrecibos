@@ -1,0 +1,4 @@
+streamlit
+PyMuPDF
+pdfplumber
+PyPDF2
