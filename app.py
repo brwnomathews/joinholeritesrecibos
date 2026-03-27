@@ -67,17 +67,32 @@ def extrair_titulo_holerite(texto):
         else:
             cpf = cpf_bruto 
 
-    # 3. Extrair Nome do Funcionário
+    # 3. Extrair Nome do Funcionário (Nova lógica focada na assinatura do CPF)
     nome = "NomeNaoEncontrado"
-    # Tenta buscar entre DATA: e CPF:
-    match_nome_base = re.search(r'DATA:\s*\n*(.*?)\n*CPF:', texto, re.IGNORECASE)
-    if match_nome_base and match_nome_base.group(1).strip():
-        nome = match_nome_base.group(1).strip()
-    else:
-        # Fallback para o topo da página
-        match_nome_topo = re.search(r'Funcionário:\s*.*?\n(.*?)\n', texto, re.IGNORECASE)
-        if match_nome_topo:
-             nome = match_nome_topo.group(1).strip()
+    # Quebra o texto em linhas removendo espaços vazios
+    linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
+    
+    for i, linha in enumerate(linhas):
+        if 'CPF:' in linha.upper():
+            # Tenta pegar na mesma linha se estiver no formato "NOME COMPLETO CPF: 123"
+            partes = re.split(r'CPF:', linha, flags=re.IGNORECASE)
+            candidato = partes[0].strip()
+            
+            if candidato and not candidato.upper().startswith('DATA'):
+                nome = re.sub(r'\d+', '', candidato).strip()
+            elif i > 0:
+                # Olha a linha imediatamente acima do CPF
+                candidato = linhas[i-1]
+                if not candidato.upper().startswith('DATA'):
+                    nome = re.sub(r'\d+', '', candidato).strip()
+                elif i > 1:
+                    # Se a linha acima for "DATA:", pula ela e pega o nome 2 linhas acima!
+                    nome = re.sub(r'\d+', '', linhas[i-2]).strip()
+            break
+            
+    # Limpeza básica do nome encontrado
+    if nome != "NomeNaoEncontrado":
+        nome = nome.strip(' :,-_')
 
     # 4. Extrair Salário Líquido
     valor = "ValorNaoEncontrado"
