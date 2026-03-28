@@ -45,45 +45,45 @@ def extrair_dados_basicos(texto):
     return cpf, valor
 
 def extrair_titulo_holerite(texto):
-    """Extrai o título completo após as páginas estarem agrupadas."""
+    """Extrai o título completo baseando-se nas 'linhas âncora' identificadas."""
     if not texto: return "Titulo_Vazio"
 
-    # 1. Extrair Período (Mês_Ano) de forma mais robusta, ignorando quebras de linha
-    periodo = "MesAnoNaoEncontrado"
-    match_periodo = re.search(r'(0[1-9]|1[0-2])/\d{4}', texto)
-    if match_periodo: 
-        periodo = match_periodo.group(0).replace('/', '_')
-
-    # 2. Extrair CPF e Valor
     cpf, valor = extrair_dados_basicos(texto)
     if not cpf: cpf = "CPFNaoEncontrado"
     if not valor: valor = "ValorNaoEncontrado"
 
-    # 3. Extrair Nome com a lógica linha a linha (a mais estável)
     nome = "NomeNaoEncontrado"
+    periodo = "MesAnoNaoEncontrado"
+
+    # Quebra o texto em linhas e remove espaços vazios
     linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
     
     for i, linha in enumerate(linhas):
-        if 'CPF:' in linha.upper():
-            partes = re.split(r'CPF:', linha, flags=re.IGNORECASE)
-            candidato = partes[0].strip()
-            
-            # Se o nome estiver na mesma linha do CPF
-            if candidato and not candidato.upper().startswith('DATA'):
-                nome = re.sub(r'\d+', '', candidato).strip()
-            # Se não, olha para a linha de cima
-            elif i > 0:
-                candidato = linhas[i-1]
-                if not candidato.upper().startswith('DATA'):
-                    nome = re.sub(r'\d+', '', candidato).strip()
-                # Se a linha de cima for "DATA:", pula ela e pega a próxima acima
-                elif i > 1:
-                    nome = re.sub(r'\d+', '', linhas[i-2]).strip()
-            break
-            
+        linha_upper = linha.upper()
+
+        # 1. Extração do Nome (Linha anterior a REFRASERV, cortando os 7 primeiros caracteres)
+        if 'REFRASERV' in linha_upper and nome == "NomeNaoEncontrado":
+            if i > 0:
+                linha_nome = linhas[i-1]
+                # Uma pequena trava de segurança: confere se a linha começa com os números do ID
+                if re.match(r'^\d+', linha_nome):
+                    if len(linha_nome) > 7:
+                        nome = linha_nome[7:].strip()
+                    else:
+                        nome = re.sub(r'^\d+\s*', '', linha_nome).strip() # Fallback
+
+        # 2. Extração do Período/Competência (Linha anterior ao "Salário hora")
+        if 'SALÁRIO HORA' in linha_upper and periodo == "MesAnoNaoEncontrado":
+            if i > 0:
+                periodo_bruto = linhas[i-1]
+                # Busca o formato de "02 2026" ou "02/2026" e coloca um _
+                match_p = re.search(r'(\d{2})[\s/]+(\d{4})', periodo_bruto)
+                if match_p:
+                    periodo = f"{match_p.group(1)}_{match_p.group(2)}"
+
+    # Limpeza final de espaços duplos
     if nome != "NomeNaoEncontrado": 
-        nome = nome.strip(' :,-_')
-        nome = re.sub(r'\s+', ' ', nome).strip() # Limpa espaços duplos
+        nome = re.sub(r'\s+', ' ', nome).strip() 
 
     titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
     titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
