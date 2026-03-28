@@ -11,6 +11,10 @@ from PyPDF2 import PdfReader, PdfWriter
 # Suprimir avisos do pdfminer
 logging.getLogger('pdfminer.pdfpage').setLevel(logging.ERROR)
 
+# Inicializa o armazenamento de sessão para manter o ZIP gerado na tela após a limpeza
+if "processed_zip" not in st.session_state:
+    st.session_state.processed_zip = None
+
 # ==========================================
 # CLASSE DE LOG EM TEMPO REAL
 # ==========================================
@@ -61,13 +65,11 @@ def extrair_titulo_holerite(texto):
     for i, linha in enumerate(linhas):
         linha_upper = linha.upper()
 
-        # 1. Extração do Período/Competência (Linha anterior ao "Salário hora")
-        if 'SALÁRIO HORA' in linha_upper and periodo == "MesAnoNaoEncontrado":
-            if i > 0:
-                periodo_bruto = linhas[i-1]
-                match_p = re.search(r'(\d{2})[\s/]+(\d{4})', periodo_bruto)
-                if match_p:
-                    periodo = f"{match_p.group(1)}_{match_p.group(2)}"
+        # 1. Extração do Período/Competência (Regra exata definida pelo usuário)
+        # Exatamente 7 caracteres, começa com 0 ou 1, tem um espaço no meio e ano entre 2000-2040.
+        if periodo == "MesAnoNaoEncontrado" and len(linha) == 7:
+            if re.match(r'^[01]\d\s(?:20[0-3]\d|2040)$', linha):
+                periodo = linha.replace(' ', '_')
 
         # 2. Extração do Nome (Lógica nova: Linha imediatamente ABAIXO do CPF)
         if 'CPF:' in linha_upper and nome == "NomeNaoEncontrado":
@@ -305,22 +307,30 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
 st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout="wide")
 st.title("📄 Processador e Unificador de PDFs")
 
-# ÁREAS DE UPLOAD
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("### 📄 1. Enviar Holerites")
-    st.markdown("Arraste PDFs soltos ou um único `.zip`")
-    up_holerites = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="holerites")
+# O FORMULÁRIO: Garante que os arquivos enviados sejam limpos após o clique
+with st.form("upload_form", clear_on_submit=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 📄 1. Enviar Holerites")
+        st.markdown("Arraste PDFs soltos ou um único `.zip`")
+        up_holerites = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="holerites")
 
-with col2:
-    st.markdown("### 🧾 2. Enviar Comprovantes")
-    st.markdown("Arraste PDFs soltos ou um único `.zip`")
-    up_comprovantes = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="comprovantes")
+    with col2:
+        st.markdown("### 🧾 2. Enviar Comprovantes")
+        st.markdown("Arraste PDFs soltos ou um único `.zip`")
+        up_comprovantes = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="comprovantes")
 
-st.markdown("---")
+    st.markdown("---")
+    submit_button = st.form_submit_button("🚀 Iniciar Processamento", use_container_width=True)
 
-if st.button("🚀 Iniciar Processamento", use_container_width=True):
+# Container onde a mensagem e o botão de download irão morar (Acima do log)
+container_resultados = st.container()
+
+if submit_button:
     
+    # Limpa o estado anterior
+    st.session_state.processed_zip = None
+
     qtd_holerites = len(up_holerites) if up_holerites else 0
     qtd_comprovantes = len(up_comprovantes) if up_comprovantes else 0
 
@@ -333,9 +343,6 @@ if st.button("🚀 Iniciar Processamento", use_container_width=True):
         st.warning("⚠️ Por favor, faça o upload de ficheiros em pelo menos uma das áreas acima para iniciar o processo.")
     
     else:
-        # Container para os resultados ficar acima do terminal
-        container_resultados = st.container()
-        
         st.markdown("### 🖥️ Terminal de Processamento")
         app_logger = StreamlitLogger()
         doc_nao_classificadas = fitz.open()
@@ -365,13 +372,17 @@ if st.button("🚀 Iniciar Processamento", use_container_width=True):
                 zip_file.writestr(nome_arquivo, pdf_bytes)
             zip_file.writestr("relatorio_processamento.txt", app_logger.log_text)
 
-        # Injetando a mensagem de sucesso e o botão de download no container ACIMA do terminal
-        with container_resultados:
-            st.success("✨ Processamento concluído com sucesso!")
-            st.download_button(
-                label="⬇️ Baixar Arquivos Processados (.zip)",
-                data=zip_buffer.getvalue(),
-                file_name="arquivos_processados.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
+        # Salva o arquivo em memória da sessão
+        st.session_state.processed_zip = zip_buffer.getvalue()
+
+# Exibe a mensagem de sucesso e o botão APENAS se o arquivo estiver salvo na sessão
+if st.session_state.processed_zip:
+    with container_resultados:
+        st.success("✨ Processamento concluído com sucesso! \n\n*Os campos de upload acima foram limpos e estão prontos para uma nova execução.*")
+        st.download_button(
+            label="⬇️ Baixar Arquivos Processados (.zip)",
+            data=st.session_state.processed_zip,
+            file_name="arquivos_processados.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
