@@ -59,19 +59,21 @@ def extrair_titulo_holerite(texto):
     nome = "NomeNaoEncontrado"
     periodo = "MesAnoNaoEncontrado"
 
-    # Quebra o texto em linhas e remove espaços vazios
+    # Quebra o texto em linhas e remove espaços vazios nas pontas
     linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
     
     for i, linha in enumerate(linhas):
         linha_upper = linha.upper()
 
-        # 1. Extração do Período/Competência (Regra exata definida pelo usuário)
-        # Exatamente 7 caracteres, começa com 0 ou 1, tem um espaço no meio e ano entre 2000-2040.
-        if periodo == "MesAnoNaoEncontrado" and len(linha) == 7:
-            if re.match(r'^[01]\d\s(?:20[0-3]\d|2040)$', linha):
-                periodo = linha.replace(' ', '_')
+        # 1. Extração do Período/Competência (Lógica flexibilizada)
+        # ^ e $ garantem que é a linha inteira. 
+        # [\s/]+ aceita 1 espaço, vários espaços ou uma barra entre o mês e o ano.
+        if periodo == "MesAnoNaoEncontrado":
+            match_periodo = re.match(r'^(0[1-9]|1[0-2])[\s/]+(20[0-3]\d|2040)$', linha)
+            if match_periodo:
+                periodo = f"{match_periodo.group(1)}_{match_periodo.group(2)}"
 
-        # 2. Extração do Nome (Lógica nova: Linha imediatamente ABAIXO do CPF)
+        # 2. Extração do Nome (Linha imediatamente ABAIXO do CPF)
         if 'CPF:' in linha_upper and nome == "NomeNaoEncontrado":
             if i + 1 < len(linhas): # Garante que existe uma linha de baixo
                 candidato = linhas[i+1].strip()
