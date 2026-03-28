@@ -1,6 +1,5 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import pdfplumber
 import re
 import io
 import zipfile
@@ -9,7 +8,7 @@ from collections import defaultdict
 import logging
 from PyPDF2 import PdfReader, PdfWriter
 
-# Suprimir warnings do pdfminer (usado pelo pdfplumber)
+# Suprimir avisos do pdfminer
 logging.getLogger('pdfminer.pdfpage').setLevel(logging.ERROR)
 
 # ==========================================
@@ -26,39 +25,12 @@ class StreamlitLogger:
         self.log_placeholder.code(self.log_text, language="bash")
 
 # ==========================================
-# FUNÇÃO DE CLASSIFICAÇÃO DE TEXTO
+# FUNÇÕES DE EXTRAÇÃO BASE
 # ==========================================
-def classificar_texto_pagina(texto_pagina):
-    """Classifica a página baseada no texto extraído."""
-    if not texto_pagina:
-        return "DESCONHECIDO"
-        
-    if "RECIBO" in texto_pagina and "PROVENTOS" in texto_pagina:
-        return "HOLERITE"
-    
-    condicao_comprovante_1 = "Comprovante" in texto_pagina and "Pagamento" in texto_pagina and "Bradesco" in texto_pagina
-    condicao_comprovante_2 = "favorecido" in texto_pagina and "Bradesco" in texto_pagina
-    
-    if condicao_comprovante_1 or condicao_comprovante_2:
-        return "COMPROVANTE"
-        
-    return "DESCONHECIDO"
-
-# ==========================================
-# FUNÇÕES DE EXTRAÇÃO
-# ==========================================
-def extrair_titulo_holerite(texto):
-    if not texto:
-        return "Titulo_Pagina_Vazia_ou_Erro"
-
-    # 1. Extrair Período (Mês_Ano)
-    periodo = "MesAnoNaoEncontrado"
-    match_periodo = re.search(r'(\d{2}/\d{4})', texto)
-    if match_periodo:
-        periodo = match_periodo.group(1).replace('/', '_')
-
-    # 2. Extrair CPF e formatar
-    cpf = "CPFNaoEncontrado"
+def extrair_dados_basicos(texto):
+    """Extrai rapidamente CPF e Valor para guiar o agrupamento de páginas de Holerites."""
+    cpf = None
+    valor = None
     match_cpf = re.search(r'CPF:\s*([\d\.\-]+)', texto, re.IGNORECASE)
     if match_cpf:
         cpf_bruto = match_cpf.group(1).strip()
@@ -67,48 +39,48 @@ def extrair_titulo_holerite(texto):
         else:
             cpf = cpf_bruto 
 
-    # 3. Extrair Nome do Funcionário (Nova lógica focada na assinatura do CPF)
+    match_valor = re.search(r'SALÁRIO LÍQUIDO:[^\d]*([\d\.]+,[\d]{2})', texto, re.IGNORECASE)
+    if match_valor:
+        valor = match_valor.group(1)
+    return cpf, valor
+
+def extrair_titulo_holerite(texto):
+    """Extrai o título completo após as páginas estarem agrupadas."""
+    if not texto: return "Titulo_Vazio"
+
+    periodo = "MesAnoNaoEncontrado"
+    match_periodo = re.search(r'(\d{2}/\d{4})', texto)
+    if match_periodo: periodo = match_periodo.group(1).replace('/', '_')
+
+    cpf, valor = extrair_dados_basicos(texto)
+    if not cpf: cpf = "CPFNaoEncontrado"
+    if not valor: valor = "ValorNaoEncontrado"
+
     nome = "NomeNaoEncontrado"
-    # Quebra o texto em linhas removendo espaços vazios
     linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
-    
     for i, linha in enumerate(linhas):
         if 'CPF:' in linha.upper():
-            # Tenta pegar na mesma linha se estiver no formato "NOME COMPLETO CPF: 123"
             partes = re.split(r'CPF:', linha, flags=re.IGNORECASE)
             candidato = partes[0].strip()
             
             if candidato and not candidato.upper().startswith('DATA'):
                 nome = re.sub(r'\d+', '', candidato).strip()
             elif i > 0:
-                # Olha a linha imediatamente acima do CPF
                 candidato = linhas[i-1]
                 if not candidato.upper().startswith('DATA'):
                     nome = re.sub(r'\d+', '', candidato).strip()
                 elif i > 1:
-                    # Se a linha acima for "DATA:", pula ela e pega o nome 2 linhas acima!
                     nome = re.sub(r'\d+', '', linhas[i-2]).strip()
             break
             
-    # Limpeza básica do nome encontrado
-    if nome != "NomeNaoEncontrado":
-        nome = nome.strip(' :,-_')
+    if nome != "NomeNaoEncontrado": nome = nome.strip(' :,-_')
 
-    # 4. Extrair Salário Líquido
-    valor = "ValorNaoEncontrado"
-    match_valor = re.search(r'SALÁRIO LÍQUIDO:[^\d]*([\d\.]+,[\d]{2})', texto, re.IGNORECASE)
-    if match_valor:
-        valor = match_valor.group(1)
-
-    # 5. Montar o título final e sanitizar
     titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
-    
     titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
-    titulo_limpo = re.sub(r'\s+', ' ', titulo_sanitizado).strip()
-    
-    return titulo_limpo if titulo_limpo else "Nome_Arquivo_Invalido"
+    return re.sub(r'\s+', ' ', titulo_sanitizado).strip()
 
 def extrair_dados_comprovante(texto_pagina):
+    """Extrai os dados do comprovante usando expressões regulares."""
     cpf_pattern = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
     valor_pattern = re.compile(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b")
     nome_pattern = re.compile(r"(?:Funcionário|Favorecido):\s*(.*?)\s*CPF:", re.DOTALL)
@@ -121,169 +93,204 @@ def extrair_dados_comprovante(texto_pagina):
         cpf = cpf_match.group(0)
         valor = valor_match.group(0)
         nome = nome_match.group(1).strip() if nome_match else ""
-        
-        if nome:
-            return f"{nome} - {cpf} - R$ {valor} - RECIBO"
-        else:
-            return f"{cpf} - R$ {valor} - RECIBO"
+        return f"{nome} - {cpf} - R$ {valor} - RECIBO" if nome else f"{cpf} - R$ {valor} - RECIBO"
     return None
 
 # ==========================================
-# PROCESSAMENTO MISTO PÁGINA A PÁGINA
+# UTILITÁRIO DE UPLOAD
 # ==========================================
-def processar_pdf_misto_memoria(pdf_bytes, nome_origem, logger, holerites_dict, comprovantes_dict, doc_nao_classificadas):
-    try:
-        stream_plumber = io.BytesIO(pdf_bytes)
-        doc_fitz = fitz.open(stream=pdf_bytes, filetype="pdf")
+def extrair_pdfs_de_uploads(uploaded_files, logger):
+    """Lê ficheiros PDF soltos ou descompacta ficheiros ZIP diretamente na memória."""
+    arquivos_extraidos = []
+    for file in uploaded_files:
+        if file.name.lower().endswith('.zip'):
+            logger.print(f"📦 Extraindo ZIP: '{file.name}'")
+            try:
+                with zipfile.ZipFile(file, 'r') as z:
+                    for zip_info in z.infolist():
+                        if zip_info.filename.lower().endswith('.pdf') and not zip_info.filename.startswith('__MACOSX'):
+                            arquivos_extraidos.append((zip_info.filename.split('/')[-1], z.read(zip_info.filename)))
+            except zipfile.BadZipFile:
+                logger.print(f"❌ Erro: O ficheiro '{file.name}' não é um ZIP válido.")
+        elif file.name.lower().endswith('.pdf'):
+            arquivos_extraidos.append((file.name, file.read()))
+    return arquivos_extraidos
+
+# ==========================================
+# PROCESSAMENTO ESPECÍFICO
+# ==========================================
+def processar_holerites(arquivos, logger, doc_nao_classificadas):
+    """Processa e agrupa páginas de holerites baseando-se no CPF e Valor."""
+    holerites_dict = {}
+    agrupamento = {}
+
+    # Passo 1: Agrupar páginas por CPF e Valor (para lidar com holerites de 2 páginas)
+    for nome, pdf_bytes in arquivos:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        cpf_atual = None
+        valor_atual = None
+
+        for i in range(len(doc)):
+            texto = doc[i].get_text("text")
+            cpf, valor = extrair_dados_basicos(texto)
+
+            if cpf: cpf_atual = cpf
+            if valor: valor_atual = valor
+
+            if not cpf_atual:
+                doc_nao_classificadas.insert_pdf(doc, from_page=i, to_page=i)
+                logger.print(f"  ⚪ Pág {i+1} de '{nome}' sem CPF -> Não Classificada.")
+                continue
+
+            chave = (cpf_atual, valor_atual)
+            if chave not in agrupamento:
+                agrupamento[chave] = fitz.open()
+            agrupamento[chave].insert_pdf(doc, from_page=i, to_page=i)
+        doc.close()
+
+    # Passo 2: Nomear e gerar PDFs finais agrupados
+    for chave, pdf_doc in agrupamento.items():
+        texto_completo = ""
+        for i in range(len(pdf_doc)):
+            texto_completo += pdf_doc[i].get_text("text") + "\n"
+
+        titulo = extrair_titulo_holerite(texto_completo)
+        nome_arquivo = f"{titulo}.pdf"
         
-        with pdfplumber.open(stream_plumber) as pdf_plumb:
-            total_paginas = len(doc_fitz)
-            logger.print(f"\n>>> Lendo arquivo: '{nome_origem}' ({total_paginas} páginas)")
+        contador = 1
+        nome_base = titulo
+        while nome_arquivo in holerites_dict:
+            nome_arquivo = f"{nome_base}_{contador}.pdf"
+            contador += 1
 
-            for i in range(total_paginas):
-                texto_fitz = doc_fitz[i].get_text("text")
-                tipo_pagina = classificar_texto_pagina(texto_fitz)
+        holerites_dict[nome_arquivo] = pdf_doc.write()
+        pdf_doc.close()
+        logger.print(f"  🟢 HOLERITE -> '{nome_arquivo}' (Agrupou {len(pdf_doc)} páginas)")
 
-                if tipo_pagina == "HOLERITE":
-                    texto_plumber = pdf_plumb.pages[i].extract_text() or ""
-                    titulo = extrair_titulo_holerite(texto_plumber)
-                    
-                    nome_arquivo = f"{titulo}.pdf"
-                    if len(nome_arquivo) > 200: nome_arquivo = nome_arquivo[:196] + ".pdf"
-                    
-                    nova_pagina_pdf = fitz.open()
-                    nova_pagina_pdf.insert_pdf(doc_fitz, from_page=i, to_page=i)
-                    holerites_dict[nome_arquivo] = nova_pagina_pdf.write()
-                    nova_pagina_pdf.close()
-                    
-                    logger.print(f"  [Pág {i+1}] 🟢 HOLERITE -> Salvo como '{nome_arquivo}'")
+    return holerites_dict
 
-                elif tipo_pagina == "COMPROVANTE":
-                    titulo = extrair_dados_comprovante(texto_fitz)
-                    if titulo:
-                        nome_arquivo = f"{titulo}.pdf"
-                        
-                        contador = 1
-                        while nome_arquivo in comprovantes_dict:
-                            nome_arquivo = f"{titulo}_{contador}.pdf"
-                            contador += 1
-                            
-                        nova_pagina_pdf = fitz.open()
-                        nova_pagina_pdf.insert_pdf(doc_fitz, from_page=i, to_page=i)
-                        comprovantes_dict[nome_arquivo] = nova_pagina_pdf.write()
-                        nova_pagina_pdf.close()
-                        
-                        logger.print(f"  [Pág {i+1}] 🔵 COMPROVANTE -> Salvo como '{nome_arquivo}'")
-                    else:
-                        logger.print(f"  [Pág {i+1}] ⚠ COMPROVANTE detectado, mas falhou ao extrair CPF/Valor. Enviando para NAO CLASSIFICADAS.")
-                        doc_nao_classificadas.insert_pdf(doc_fitz, from_page=i, to_page=i)
+def processar_comprovantes(arquivos, logger, doc_nao_classificadas):
+    """Processa páginas de comprovantes isoladamente."""
+    comprovantes_dict = {}
+    for nome, pdf_bytes in arquivos:
+        doc_fitz = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for i in range(len(doc_fitz)):
+            texto_fitz = doc_fitz[i].get_text("text")
+            titulo = extrair_dados_comprovante(texto_fitz)
 
-                else:
-                    logger.print(f"  [Pág {i+1}] ⚪ DESCONHECIDO -> Adicionado ao arquivo de não classificadas.")
-                    doc_nao_classificadas.insert_pdf(doc_fitz, from_page=i, to_page=i)
+            if titulo:
+                nome_arquivo = f"{titulo}.pdf"
+                contador = 1
+                while nome_arquivo in comprovantes_dict:
+                    nome_arquivo = f"{titulo}_{contador}.pdf"
+                    contador += 1
                     
+                nova_pagina = fitz.open()
+                nova_pagina.insert_pdf(doc_fitz, from_page=i, to_page=i)
+                comprovantes_dict[nome_arquivo] = nova_pagina.write()
+                nova_pagina.close()
+                logger.print(f"  🔵 COMPROVANTE -> '{nome_arquivo}'")
+            else:
+                logger.print(f"  ⚠ Pág {i+1} de '{nome}' falhou na extração. Enviando p/ NAO CLASSIFICADAS.")
+                doc_nao_classificadas.insert_pdf(doc_fitz, from_page=i, to_page=i)
         doc_fitz.close()
-    except Exception as e:
-        logger.print(f"Erro ao processar arquivo {nome_origem}: {e}")
+    return comprovantes_dict
 
 # ==========================================
-# ETAPA 3: UNIÃO E AGREGAÇÃO
+# UNIÃO DOS ARQUIVOS
 # ==========================================
 def extrair_cpf_e_valor(nome_arquivo):
-    padrao_cpf = r'(\d{3}\.\d{3}\.\d{3}-\d{2})'
-    padrao_valor = r'R\$\s*([\d\.,]+,\d{2})'
-    match_cpf = re.search(padrao_cpf, nome_arquivo)
-    match_valor = re.search(padrao_valor, nome_arquivo)
-    
+    """Extrai CPF e valor do nome do ficheiro para a lógica de união."""
+    match_cpf = re.search(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', nome_arquivo)
+    match_valor = re.search(r'R\$\s*([\d\.,]+,\d{2})', nome_arquivo)
     cpf_str = match_cpf.group(1) if match_cpf else None
     valor_float = None
     if match_valor:
         try:
             valor_float = float(match_valor.group(1).replace('.', '').replace(',', '.'))
-        except:
-            pass
+        except: pass
     return cpf_str, valor_float
 
 def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
+    """Une holerites e comprovantes baseando-se em combinações de valores por CPF."""
     arquivos_finais = {}
-    grupos_por_cpf = defaultdict(lambda: {'original': None, 'recibos': [], 'nome_original_completo': None})
+    grupos_por_cpf = defaultdict(lambda: {'originais': [], 'recibos': []})
 
-    logger.print("\n--- Agrupando Arquivos por CPF ---")
-    
     for nome, pdf_bytes in holerites_dict.items():
         cpf, valor = extrair_cpf_e_valor(nome)
-        if cpf:
-            grupos_por_cpf[cpf]['original'] = {'nome': nome, 'valor': valor, 'bytes': pdf_bytes}
-            grupos_por_cpf[cpf]['nome_original_completo'] = nome
+        if cpf: grupos_por_cpf[cpf]['originais'].append({'nome': nome, 'valor': valor, 'bytes': pdf_bytes})
 
     for nome, pdf_bytes in comprovantes_dict.items():
         cpf, valor = extrair_cpf_e_valor(nome)
-        if cpf:
-            grupos_por_cpf[cpf]['recibos'].append({'nome': nome, 'valor': valor, 'bytes': pdf_bytes})
+        if cpf: grupos_por_cpf[cpf]['recibos'].append({'nome': nome, 'valor': valor, 'bytes': pdf_bytes, 'usado': False})
 
-    logger.print("\n--- Iniciando o processo de união condicional ---")
     tolerancia = 0.01
 
     for cpf, dados in grupos_por_cpf.items():
-        original = dados['original']
+        originais = dados['originais']
         recibos = dados['recibos']
-        
-        if not original:
-            continue
-            
-        if not recibos:
-            logger.print(f" [Aviso] Nenhum comprovante encontrado para CPF {cpf}. Holerite mantido isolado.")
-            arquivos_finais[original['nome']] = original['bytes']
-            continue
 
-        valor_original = original['valor']
-        uniao_realizada = False
-        
-        for recibo in recibos:
-            if valor_original is not None and recibo['valor'] is not None and abs(recibo['valor'] - valor_original) < tolerancia:
-                novo_nome = original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
-                
-                writer = PdfWriter()
-                writer.add_page(PdfReader(io.BytesIO(original['bytes'])).pages[0])
-                writer.add_page(PdfReader(io.BytesIO(recibo['bytes'])).pages[0])
-                
-                out_stream = io.BytesIO()
-                writer.write(out_stream)
-                arquivos_finais[novo_nome] = out_stream.getvalue()
-                
-                logger.print(f" [SUCESSO] Unido match exato: {novo_nome}")
-                uniao_realizada = True
-                break
+        for original in originais:
+            valor_original = original['valor']
+            uniao_realizada = False
 
-        if not uniao_realizada and valor_original is not None:
-            melhor_combinacao = None
-            for r_count in range(1, len(recibos) + 1):
-                for combinacao in itertools.combinations(recibos, r_count):
-                    soma = sum(r['valor'] for r in combinacao if r['valor'] is not None)
-                    if abs(soma - valor_original) < tolerancia:
-                        melhor_combinacao = combinacao
-                        break
-                if melhor_combinacao: break
-                
-            if melhor_combinacao:
-                novo_nome = original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
-                writer = PdfWriter()
-                writer.add_page(PdfReader(io.BytesIO(original['bytes'])).pages[0])
-                
-                recibos_ordenados = sorted(melhor_combinacao, key=lambda x: x['valor'] or 0)
-                for rec in recibos_ordenados:
-                    writer.add_page(PdfReader(io.BytesIO(rec['bytes'])).pages[0])
+            if valor_original is None:
+                arquivos_finais[original['nome']] = original['bytes']
+                continue
+
+            # Lógica 1: Correspondência exata de valor
+            for recibo in recibos:
+                if not recibo['usado'] and recibo['valor'] is not None and abs(recibo['valor'] - valor_original) < tolerancia:
+                    novo_nome = original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
+                    writer = PdfWriter()
+                    pdf_orig = PdfReader(io.BytesIO(original['bytes']))
+                    for p in pdf_orig.pages: writer.add_page(p)
                     
-                out_stream = io.BytesIO()
-                writer.write(out_stream)
-                arquivos_finais[novo_nome] = out_stream.getvalue()
-                
-                logger.print(f" [SUCESSO] Unido combinações: {novo_nome}")
-                uniao_realizada = True
+                    writer.add_page(PdfReader(io.BytesIO(recibo['bytes'])).pages[0])
+                    
+                    out_stream = io.BytesIO()
+                    writer.write(out_stream)
+                    arquivos_finais[novo_nome] = out_stream.getvalue()
+                    
+                    recibo['usado'] = True
+                    uniao_realizada = True
+                    logger.print(f" [SUCESSO] Unido match exato: {novo_nome}")
+                    break
 
-        if not uniao_realizada:
-            logger.print(f" [Aviso] Sem combinações válidas para CPF {cpf}. Mantendo arquivo original.")
-            arquivos_finais[original['nome']] = original['bytes']
+            # Lógica 2: Combinação de múltiplos recibos para o mesmo holerite
+            if not uniao_realizada:
+                recibos_disponiveis = [r for r in recibos if not r['usado']]
+                melhor_combinacao = None
+
+                for r_count in range(1, len(recibos_disponiveis) + 1):
+                    for combinacao in itertools.combinations(recibos_disponiveis, r_count):
+                        soma = sum(r['valor'] for r in combinacao if r['valor'] is not None)
+                        if abs(soma - valor_original) < tolerancia:
+                            melhor_combinacao = combinacao
+                            break
+                    if melhor_combinacao: break
+                    
+                if melhor_combinacao:
+                    novo_nome = original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
+                    writer = PdfWriter()
+                    pdf_orig = PdfReader(io.BytesIO(original['bytes']))
+                    for p in pdf_orig.pages: writer.add_page(p)
+                    
+                    recibos_ordenados = sorted(melhor_combinacao, key=lambda x: x['valor'] or 0)
+                    for rec in recibos_ordenados:
+                        writer.add_page(PdfReader(io.BytesIO(rec['bytes'])).pages[0])
+                        rec['usado'] = True
+                        
+                    out_stream = io.BytesIO()
+                    writer.write(out_stream)
+                    arquivos_finais[novo_nome] = out_stream.getvalue()
+                    
+                    uniao_realizada = True
+                    logger.print(f" [SUCESSO] Unido combinações: {novo_nome}")
+
+            if not uniao_realizada:
+                logger.print(f" [Aviso] Sem combinações válidas p/ {original['nome']}. Mantendo isolado.")
+                arquivos_finais[original['nome']] = original['bytes']
 
     return arquivos_finais
 
@@ -292,58 +299,76 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
 # ==========================================
 st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout="wide")
 st.title("📄 Processador e Unificador de PDFs")
-st.markdown("Faça o upload dos seus PDFs soltos **OU** suba um único arquivo **.zip** contendo todos eles juntos!")
 
-uploaded_files = st.file_uploader("Selecione os arquivos (PDF ou ZIP)", type=["pdf", "zip"], accept_multiple_files=True)
+# CRIANDO AS DUAS ÁREAS DE UPLOAD SEPARADAS (COLUNAS)
+col1, col2 = st.columns(2)
 
-if st.button("🚀 Iniciar Processamento"):
-    if not uploaded_files:
-        st.warning("Por favor, faça o upload de pelo menos um arquivo.")
+with col1:
+    st.markdown("### 📄 1. Enviar Holerites")
+    st.markdown("Arraste PDFs soltos ou um único `.zip`")
+    # Este é o primeiro "botão/área" de upload exclusivo para Holerites
+    up_holerites = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="holerites")
+
+with col2:
+    st.markdown("### 🧾 2. Enviar Comprovantes")
+    st.markdown("Arraste PDFs soltos ou um único `.zip`")
+    # Este é o segundo "botão/área" de upload exclusivo para Comprovantes
+    up_comprovantes = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="comprovantes")
+
+st.markdown("---") # Linha de separação visual
+
+# BOTÃO DE INICIAR O PROCESSAMENTO GERAL
+if st.button("🚀 Iniciar Processamento", use_container_width=True):
+    
+    # Contagem para o limite de 50 ficheiros de segurança
+    qtd_holerites = len(up_holerites) if up_holerites else 0
+    qtd_comprovantes = len(up_comprovantes) if up_comprovantes else 0
+
+    if qtd_holerites > 50 or qtd_comprovantes > 50:
+        st.error("🛑 **Limite de ficheiros excedido!**\n\n"
+                 "Selecionou mais de 50 ficheiros num dos campos. O limite para envio de ficheiros soltos é de **50 PDFs de cada vez** para garantir o melhor desempenho.\n\n"
+                 "👉 **O que fazer:** Coloque todos os seus PDFs dentro de uma pasta compactada (**ficheiro .zip**) e faça o upload de apenas **um único ficheiro .zip** na área correspondente. O sistema irá extrair todos eles automaticamente!")
+    
+    elif not up_holerites and not up_comprovantes:
+        st.warning("⚠️ Por favor, faça o upload de ficheiros em pelo menos uma das áreas acima para iniciar o processo.")
+    
     else:
         st.markdown("### 🖥️ Terminal de Processamento")
         app_logger = StreamlitLogger()
-        
-        holerites_separados = {}
-        comprovantes_separados = {}
         doc_nao_classificadas = fitz.open()
         
-        app_logger.print(">>> INICIANDO TRIAGEM E EXTRAÇÃO...")
+        # O código não tenta mais adivinhar o tipo do ficheiro! 
+        # Ele confia em qual área (botão) você fez o upload.
+        arq_holerites = extrair_pdfs_de_uploads(up_holerites, app_logger) if up_holerites else []
+        arq_comprovantes = extrair_pdfs_de_uploads(up_comprovantes, app_logger) if up_comprovantes else []
+
+        # Processamento
+        app_logger.print("\n>>> PROCESSANDO HOLERITES...")
+        holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas) if arq_holerites else {}
         
-        for file in uploaded_files:
-            if file.name.lower().endswith('.zip'):
-                app_logger.print(f"\n📦 Abrindo arquivo ZIP: '{file.name}'")
-                try:
-                    with zipfile.ZipFile(file, 'r') as z:
-                        for zip_info in z.infolist():
-                            if zip_info.filename.lower().endswith('.pdf') and not zip_info.filename.startswith('__MACOSX'):
-                                pdf_bytes = z.read(zip_info.filename)
-                                nome_limpo = zip_info.filename.split('/')[-1]
-                                processar_pdf_misto_memoria(pdf_bytes, nome_limpo, app_logger, holerites_separados, comprovantes_separados, doc_nao_classificadas)
-                except zipfile.BadZipFile:
-                    app_logger.print(f"❌ Erro: O arquivo '{file.name}' parece não ser um ZIP válido.")
+        app_logger.print("\n>>> PROCESSANDO COMPROVANTES...")
+        comprovantes_sep = processar_comprovantes(arq_comprovantes, app_logger, doc_nao_classificadas) if arq_comprovantes else {}
             
-            elif file.name.lower().endswith('.pdf'):
-                file_bytes = file.read()
-                processar_pdf_misto_memoria(file_bytes, file.name, app_logger, holerites_separados, comprovantes_separados, doc_nao_classificadas)
-            
+        # União
         app_logger.print("\n>>> UNINDO HOLERITES E COMPROVANTES...")
-        pdfs_finais = unir_arquivos_memoria(holerites_separados, comprovantes_separados, app_logger)
+        pdfs_finais = unir_arquivos_memoria(holerites_sep, comprovantes_sep, app_logger)
         
+        # Páginas não classificadas
         if len(doc_nao_classificadas) > 0:
             app_logger.print(f"\n>>> FORAM ENCONTRADAS {len(doc_nao_classificadas)} PÁGINA(S) NÃO CLASSIFICADA(S)!")
             pdfs_finais["NAO_CLASSIFICADAS.pdf"] = doc_nao_classificadas.write()
-        
         doc_nao_classificadas.close()
         
-        app_logger.print("\n>>> FINALIZADO! Preparando arquivo ZIP de saída...")
+        app_logger.print("\n>>> FINALIZADO! Preparando ficheiro ZIP de saída...")
 
+        # ZIP de Saída
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for nome_arquivo, pdf_bytes in pdfs_finais.items():
                 zip_file.writestr(nome_arquivo, pdf_bytes)
             zip_file.writestr("relatorio_processamento.txt", app_logger.log_text)
 
-        st.success("Processamento concluído com sucesso!")
+        st.success("✨ Processamento concluído com sucesso!")
         st.download_button(
             label="⬇️ Baixar Arquivos Processados (.zip)",
             data=zip_buffer.getvalue(),
