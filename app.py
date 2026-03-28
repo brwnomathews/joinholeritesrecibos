@@ -29,7 +29,7 @@ class StreamlitLogger:
         self.log_placeholder.code(self.log_text, language="bash")
 
 # ==========================================
-# FUNÇÃO UNIFICADA DE EXTRAÇÃO
+# FUNÇÃO UNIFICADA DE EXTRAÇÃO (HOLERITES)
 # ==========================================
 def extrair_dados_completos(texto):
     """Extrai CPF, Valor, Nome e Competência em uma única passada de texto."""
@@ -78,20 +78,17 @@ def extrair_dados_completos(texto):
     return cpf, valor, nome, periodo
 
 def extrair_dados_comprovante(texto_pagina):
-    """Extrai os dados isolados do comprovante usando expressões regulares mais permissivas."""
+    """Extrai APENAS CPF e Valor. O nome será buscado EXCLUSIVAMENTE via dicionário dos Holerites."""
     cpf_pattern = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
     valor_pattern = re.compile(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b")
-    nome_pattern = re.compile(r"(?:Funcionário|Favorecido|Nome)[:\s]+(.*?)(?=\s*CPF:|\s*-|\r|\n|$)", re.IGNORECASE)
 
     cpf_match = cpf_pattern.search(texto_pagina)
     valor_match = valor_pattern.search(texto_pagina)
-    nome_match = nome_pattern.search(texto_pagina)
 
     cpf = cpf_match.group(0) if cpf_match else None
     valor = valor_match.group(0) if valor_match else None
-    nome_extraido = nome_match.group(1).strip() if nome_match else None
 
-    return cpf, valor, nome_extraido
+    return cpf, valor
 
 # ==========================================
 # UTILITÁRIO DE UPLOAD
@@ -186,29 +183,29 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
         doc_fitz = fitz.open(stream=pdf_bytes, filetype="pdf")
         for i in range(len(doc_fitz)):
             texto_fitz = doc_fitz[i].get_text("text")
-            cpf, valor, nome_extraido = extrair_dados_comprovante(texto_fitz)
+            
+            # Não tentamos mais adivinhar o nome pelo texto!
+            cpf, valor = extrair_dados_comprovante(texto_fitz)
+            nome_final = None
 
-            # BUSCA REVERSA: Se tem Valor mas não tem CPF, varre o texto atrás dos Nomes do Título do Holerite
+            # BUSCA REVERSA: Se tem Valor mas FALTOU CPF, varre o texto atrás dos Nomes do Título do Holerite
             if not cpf and valor:
                 texto_upper = re.sub(r'\s+', ' ', texto_fitz.upper())
                 for nome_conhecido, cpf_associado in map_nome_cpf.items():
-                    # Pergunta: Esse nome do título está dentro do texto desta página?
+                    # Pergunta: Esse nome validado está dentro do texto desta página?
                     if nome_conhecido in texto_upper:
                         cpf = cpf_associado
-                        nome_extraido = map_cpf_nome[cpf] # Usa a formatação bonitinha
+                        nome_final = map_cpf_nome[cpf] # Resgata a formatação correta
                         logger.print(f"  🔍 Resgate! CPF {cpf} encontrado via Nome '{nome_conhecido}'")
                         break
 
-            # Processamento final do Comprovante (só segue se tiver CPF e Valor)
+            # Processamento final do Comprovante
             if cpf and valor:
-                nome_final = ""
-                # Prioriza o nome extraído dos títulos dos Holerites
-                if cpf in map_cpf_nome:
+                # Faltou o nome? Ele olha o CPF e busca no dicionário o nome do título!
+                if not nome_final and cpf in map_cpf_nome:
                     nome_final = map_cpf_nome[cpf]
-                elif nome_extraido:
-                    nome_final = nome_extraido
                 
-                # Monta o título
+                # Monta o título apenas com o que é garantido
                 if nome_final:
                     titulo = f"{nome_final} - {cpf} - R$ {valor} - RECIBO"
                 else:
@@ -383,17 +380,15 @@ if submit_button:
         holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas) if arq_holerites else {}
         
         # -------------------------------------------------------------------
-        # AQUI ACONTECE A NOVA LÓGICA DE CARONA VIA TÍTULO DE HOLERITE
+        # MAPA DE NOMES E CPFS (LIDOS DIRETAMENTE DOS TÍTULOS DOS HOLERITES)
         # -------------------------------------------------------------------
         map_cpf_nome = {}
         map_nome_cpf = {}
         for nome_arquivo in holerites_sep.keys():
-            # Limpa a extensão e fatia o título: NOME - CPF - COMPETENCIA - VALOR
             partes = nome_arquivo.replace(".pdf", "").split(" - ")
             if len(partes) >= 2:
                 nome = partes[0].strip()
                 cpf = partes[1].strip()
-                # Garante que é um CPF válido e um Nome válido
                 if nome.upper() != "NOMENAOENCONTRADO" and re.match(r'\d{3}\.\d{3}\.\d{3}-\d{2}', cpf):
                     map_cpf_nome[cpf] = nome
                     map_nome_cpf[nome.upper()] = cpf
