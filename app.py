@@ -48,33 +48,32 @@ def extrair_titulo_holerite(texto):
     """Extrai o título completo após as páginas estarem agrupadas."""
     if not texto: return "Titulo_Vazio"
 
+    # 1. Extrair Período (Mês_Ano)
     periodo = "MesAnoNaoEncontrado"
-    match_periodo = re.search(r'(\d{2}/\d{4})', texto)
-    if match_periodo: periodo = match_periodo.group(1).replace('/', '_')
+    # REGEX ATUALIZADO: Garante que o mês seja de 01 a 12 (ignora finais de CNPJ como 45/0001)
+    match_periodo = re.search(r'\b(0[1-9]|1[0-2])/\d{4}\b', texto)
+    if match_periodo: 
+        periodo = match_periodo.group(0).replace('/', '_')
 
+    # 2. Extrair CPF e Valor
     cpf, valor = extrair_dados_basicos(texto)
     if not cpf: cpf = "CPFNaoEncontrado"
     if not valor: valor = "ValorNaoEncontrado"
 
+    # 3. Extrair Nome
     nome = "NomeNaoEncontrado"
-    linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
-    for i, linha in enumerate(linhas):
-        if 'CPF:' in linha.upper():
-            partes = re.split(r'CPF:', linha, flags=re.IGNORECASE)
-            candidato = partes[0].strip()
-            
-            if candidato and not candidato.upper().startswith('DATA'):
-                nome = re.sub(r'\d+', '', candidato).strip()
-            elif i > 0:
-                candidato = linhas[i-1]
-                if not candidato.upper().startswith('DATA'):
-                    nome = re.sub(r'\d+', '', candidato).strip()
-                elif i > 1:
-                    nome = re.sub(r'\d+', '', linhas[i-2]).strip()
-            break
-            
-    if nome != "NomeNaoEncontrado": nome = nome.strip(' :,-_')
+    # REGEX ATUALIZADO: Busca tudo o que estiver entre "DATA:" e "CPF:" (ignora quebras de linha)
+    match_nome = re.search(r'DATA:\s*(.*?)\s*CPF:', texto, re.IGNORECASE | re.DOTALL)
+    
+    if match_nome and match_nome.group(1).strip():
+        nome_extraido = match_nome.group(1).strip()
+        nome_limpo = re.sub(r'\d+', '', nome_extraido) # Tira números acidentais
+        nome = re.sub(r'\s+', ' ', nome_limpo).strip() # Remove quebras de linha e normaliza
+        
+    if not nome or nome == "":
+        nome = "NomeNaoEncontrado"
 
+    # 4. Montar Título
     titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
     titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
     return re.sub(r'\s+', ' ', titulo_sanitizado).strip()
@@ -164,7 +163,6 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
             contador += 1
 
         holerites_dict[nome_arquivo] = pdf_doc.write()
-        # CORREÇÃO AQUI: Primeiro escrevemos o log com o len(pdf_doc), depois fechamos o documento.
         logger.print(f"  🟢 HOLERITE -> '{nome_arquivo}' (Agrupou {len(pdf_doc)} páginas)")
         pdf_doc.close()
 
@@ -307,13 +305,11 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("### 📄 1. Enviar Holerites")
     st.markdown("Arraste PDFs soltos ou um único `.zip`")
-    # Este é o primeiro "botão/área" de upload exclusivo para Holerites
     up_holerites = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="holerites")
 
 with col2:
     st.markdown("### 🧾 2. Enviar Comprovantes")
     st.markdown("Arraste PDFs soltos ou um único `.zip`")
-    # Este é o segundo "botão/área" de upload exclusivo para Comprovantes
     up_comprovantes = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="comprovantes")
 
 st.markdown("---") # Linha de separação visual
@@ -338,8 +334,6 @@ if st.button("🚀 Iniciar Processamento", use_container_width=True):
         app_logger = StreamlitLogger()
         doc_nao_classificadas = fitz.open()
         
-        # O código não tenta mais adivinhar o tipo do ficheiro! 
-        # Ele confia em qual área (botão) você fez o upload.
         arq_holerites = extrair_pdfs_de_uploads(up_holerites, app_logger) if up_holerites else []
         arq_comprovantes = extrair_pdfs_de_uploads(up_comprovantes, app_logger) if up_comprovantes else []
 
