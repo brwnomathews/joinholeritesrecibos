@@ -81,7 +81,6 @@ def extrair_dados_comprovante(texto_pagina):
     """Extrai os dados isolados do comprovante usando expressões regulares mais permissivas."""
     cpf_pattern = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
     valor_pattern = re.compile(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b")
-    # Padrão de nome mais flexível caso exista um cabeçalho reconhecível
     nome_pattern = re.compile(r"(?:Funcionário|Favorecido|Nome)[:\s]+(.*?)(?=\s*CPF:|\s*-|\r|\n|$)", re.IGNORECASE)
 
     cpf_match = cpf_pattern.search(texto_pagina)
@@ -178,40 +177,34 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
         logger.print(f"  🟢 HOLERITE -> '{nome_arquivo}' (Agrupou {len(pdf_doc)} páginas)")
         pdf_doc.close()
 
-    return holerites_dict, memoria_cpf
+    return holerites_dict
 
-def processar_comprovantes(arquivos, logger, doc_nao_classificadas, memoria_cpf):
+def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome, map_nome_cpf):
     comprovantes_dict = {}
     
-    # CRIANDO DICIONÁRIO REVERSO (Nome -> CPF) PARA BUSCA DE CARONA
-    map_nome_cpf = {}
-    for cpf_mem, dados in memoria_cpf.items():
-        if dados['nome'] != "NomeNaoEncontrado":
-            nome_limpo = re.sub(r'\s+', ' ', dados['nome'].strip().upper())
-            map_nome_cpf[nome_limpo] = cpf_mem
-
     for nome_arq, pdf_bytes in arquivos:
         doc_fitz = fitz.open(stream=pdf_bytes, filetype="pdf")
         for i in range(len(doc_fitz)):
             texto_fitz = doc_fitz[i].get_text("text")
             cpf, valor, nome_extraido = extrair_dados_comprovante(texto_fitz)
 
-            # BUSCA REVERSA: Se tem Valor mas não tem CPF, varre o texto atrás dos nomes salvos
+            # BUSCA REVERSA: Se tem Valor mas não tem CPF, varre o texto atrás dos Nomes do Título do Holerite
             if not cpf and valor:
-                texto_upper = re.sub(r'\s+', ' ', texto_fitz.upper()) # Normaliza espaços do texto do PDF
+                texto_upper = re.sub(r'\s+', ' ', texto_fitz.upper())
                 for nome_conhecido, cpf_associado in map_nome_cpf.items():
+                    # Pergunta: Esse nome do título está dentro do texto desta página?
                     if nome_conhecido in texto_upper:
                         cpf = cpf_associado
-                        nome_extraido = nome_conhecido # Aproveita o nome correto
+                        nome_extraido = map_cpf_nome[cpf] # Usa a formatação bonitinha
                         logger.print(f"  🔍 Resgate! CPF {cpf} encontrado via Nome '{nome_conhecido}'")
                         break
 
             # Processamento final do Comprovante (só segue se tiver CPF e Valor)
             if cpf and valor:
                 nome_final = ""
-                # Prioriza o nome bonito salvo na memória do Holerite
-                if cpf in memoria_cpf and memoria_cpf[cpf]['nome'] != "NomeNaoEncontrado":
-                    nome_final = memoria_cpf[cpf]['nome']
+                # Prioriza o nome extraído dos títulos dos Holerites
+                if cpf in map_cpf_nome:
+                    nome_final = map_cpf_nome[cpf]
                 elif nome_extraido:
                     nome_final = nome_extraido
                 
@@ -387,13 +380,27 @@ if submit_button:
 
         app_logger.print("\n>>> PROCESSANDO HOLERITES...")
         
-        if arq_holerites:
-            holerites_sep, memoria_cpf = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas)
-        else:
-            holerites_sep, memoria_cpf = {}, {}
+        holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas) if arq_holerites else {}
+        
+        # -------------------------------------------------------------------
+        # AQUI ACONTECE A NOVA LÓGICA DE CARONA VIA TÍTULO DE HOLERITE
+        # -------------------------------------------------------------------
+        map_cpf_nome = {}
+        map_nome_cpf = {}
+        for nome_arquivo in holerites_sep.keys():
+            # Limpa a extensão e fatia o título: NOME - CPF - COMPETENCIA - VALOR
+            partes = nome_arquivo.replace(".pdf", "").split(" - ")
+            if len(partes) >= 2:
+                nome = partes[0].strip()
+                cpf = partes[1].strip()
+                # Garante que é um CPF válido e um Nome válido
+                if nome.upper() != "NOMENAOENCONTRADO" and re.match(r'\d{3}\.\d{3}\.\d{3}-\d{2}', cpf):
+                    map_cpf_nome[cpf] = nome
+                    map_nome_cpf[nome.upper()] = cpf
         
         app_logger.print("\n>>> PROCESSANDO COMPROVANTES...")
-        comprovantes_sep = processar_comprovantes(arq_comprovantes, app_logger, doc_nao_classificadas, memoria_cpf) if arq_comprovantes else {}
+        
+        comprovantes_sep = processar_comprovantes(arq_comprovantes, app_logger, doc_nao_classificadas, map_cpf_nome, map_nome_cpf) if arq_comprovantes else {}
             
         app_logger.print("\n>>> UNINDO HOLERITES E COMPROVANTES...")
         pdfs_finais = unir_arquivos_memoria(holerites_sep, comprovantes_sep, app_logger)
