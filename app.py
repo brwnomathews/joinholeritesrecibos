@@ -61,29 +61,26 @@ def extrair_titulo_holerite(texto):
     for i, linha in enumerate(linhas):
         linha_upper = linha.upper()
 
-        # 1. Extração do Nome (Linha anterior a REFRASERV, cortando os 7 primeiros caracteres)
-        if 'REFRASERV' in linha_upper and nome == "NomeNaoEncontrado":
-            if i > 0:
-                linha_nome = linhas[i-1]
-                # Uma pequena trava de segurança: confere se a linha começa com os números do ID
-                if re.match(r'^\d+', linha_nome):
-                    if len(linha_nome) > 7:
-                        nome = linha_nome[7:].strip()
-                    else:
-                        nome = re.sub(r'^\d+\s*', '', linha_nome).strip() # Fallback
-
-        # 2. Extração do Período/Competência (Linha anterior ao "Salário hora")
+        # 1. Extração do Período/Competência (Linha anterior ao "Salário hora")
         if 'SALÁRIO HORA' in linha_upper and periodo == "MesAnoNaoEncontrado":
             if i > 0:
                 periodo_bruto = linhas[i-1]
-                # Busca o formato de "02 2026" ou "02/2026" e coloca um _
                 match_p = re.search(r'(\d{2})[\s/]+(\d{4})', periodo_bruto)
                 if match_p:
                     periodo = f"{match_p.group(1)}_{match_p.group(2)}"
 
-    # Limpeza final de espaços duplos
+        # 2. Extração do Nome (Lógica nova: Linha imediatamente ABAIXO do CPF)
+        if 'CPF:' in linha_upper and nome == "NomeNaoEncontrado":
+            if i + 1 < len(linhas): # Garante que existe uma linha de baixo
+                candidato = linhas[i+1].strip()
+                # Verifica se não bateu na palavra DATA por algum motivo de formatação
+                if not candidato.upper().startswith('DATA'):
+                    nome = re.sub(r'\d+', '', candidato).strip() # Limpa possíveis números
+
+    # Limpeza final de formatação do nome
     if nome != "NomeNaoEncontrado": 
         nome = re.sub(r'\s+', ' ', nome).strip() 
+        nome = nome.strip(' :,-_')
 
     titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
     titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
@@ -336,7 +333,7 @@ if st.button("🚀 Iniciar Processamento", use_container_width=True):
         st.warning("⚠️ Por favor, faça o upload de ficheiros em pelo menos uma das áreas acima para iniciar o processo.")
     
     else:
-        # AQUI ESTÁ O NOVO LAYOUT: Container para os resultados ficar acima do terminal
+        # Container para os resultados ficar acima do terminal
         container_resultados = st.container()
         
         st.markdown("### 🖥️ Terminal de Processamento")
@@ -368,7 +365,7 @@ if st.button("🚀 Iniciar Processamento", use_container_width=True):
                 zip_file.writestr(nome_arquivo, pdf_bytes)
             zip_file.writestr("relatorio_processamento.txt", app_logger.log_text)
 
-        # Injetando a mensagem de sucesso e o botão de download no container que criamos ACIMA do terminal
+        # Injetando a mensagem de sucesso e o botão de download no container ACIMA do terminal
         with container_resultados:
             st.success("✨ Processamento concluído com sucesso!")
             st.download_button(
