@@ -78,7 +78,7 @@ def extrair_dados_completos(texto):
     return cpf, valor, nome, periodo
 
 def extrair_dados_comprovante(texto_pagina):
-    """Extrai os dados do comprovante usando expressões regulares."""
+    """Extrai os dados isolados do comprovante usando expressões regulares."""
     cpf_pattern = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
     valor_pattern = re.compile(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b")
     nome_pattern = re.compile(r"(?:Funcionário|Favorecido):\s*(.*?)\s*CPF:", re.DOTALL)
@@ -87,12 +87,11 @@ def extrair_dados_comprovante(texto_pagina):
     valor_match = valor_pattern.search(texto_pagina)
     nome_match = nome_pattern.search(texto_pagina)
 
-    if cpf_match and valor_match:
-        cpf = cpf_match.group(0)
-        valor = valor_match.group(0)
-        nome = nome_match.group(1).strip() if nome_match else ""
-        return f"{nome} - {cpf} - R$ {valor} - RECIBO" if nome else f"{cpf} - R$ {valor} - RECIBO"
-    return None
+    cpf = cpf_match.group(0) if cpf_match else None
+    valor = valor_match.group(0) if valor_match else None
+    nome_extraido = nome_match.group(1).strip() if nome_match else None
+
+    return cpf, valor, nome_extraido
 
 # ==========================================
 # UTILITÁRIO DE UPLOAD
@@ -115,12 +114,12 @@ def extrair_pdfs_de_uploads(uploaded_files, logger):
     return arquivos_extraidos
 
 # ==========================================
-# PROCESSAMENTO ESPECÍFICO (HOLERITES COM CACHE/MEMÓRIA)
+# PROCESSAMENTO ESPECÍFICO
 # ==========================================
 def processar_holerites(arquivos, logger, doc_nao_classificadas):
     holerites_dict = {}
     agrupamento = {}
-    # MEMÓRIA INTELIGENTE: Guarda Nome e Período de cada CPF para herdar nos próximos arquivos do mesmo funcionário
+    # MEMÓRIA INTELIGENTE: Guarda Nome e Período de cada CPF
     memoria_cpf = defaultdict(lambda: {'nome': "NomeNaoEncontrado", 'periodo': "MesAnoNaoEncontrado"})
 
     for nome_arq, pdf_bytes in arquivos:
@@ -132,53 +131,43 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
             texto = doc[i].get_text("text")
             cpf, valor, nome, periodo = extrair_dados_completos(texto)
 
-            # Atualiza variáveis correntes
             if cpf: cpf_atual = cpf
             if valor: valor_atual = valor
             
-            # Alimenta a memória para este CPF
             if cpf_atual:
                 if nome != "NomeNaoEncontrado": memoria_cpf[cpf_atual]['nome'] = nome
                 if periodo != "MesAnoNaoEncontrado": memoria_cpf[cpf_atual]['periodo'] = periodo
 
-            # Pula páginas completamente sem identificação
             if not cpf_atual:
                 doc_nao_classificadas.insert_pdf(doc, from_page=i, to_page=i)
                 logger.print(f"  ⚪ Pág {i+1} de '{nome_arq}' sem CPF -> Não Classificada.")
                 continue
 
-            # Agrupa os bytes do pdf baseando-se no CPF e Valor
             chave = (cpf_atual, valor_atual)
             if chave not in agrupamento:
                 agrupamento[chave] = fitz.open()
             agrupamento[chave].insert_pdf(doc, from_page=i, to_page=i)
         doc.close()
 
-    # Geração dos títulos e arquivos finais
     for chave, pdf_doc in agrupamento.items():
         cpf_grupo, valor_grupo = chave
         texto_completo = ""
         for i in range(len(pdf_doc)):
             texto_completo += pdf_doc[i].get_text("text") + "\n"
 
-        # Tenta extrair normalmente
         cpf, valor, nome, periodo = extrair_dados_completos(texto_completo)
 
-        # SE O NOME OU PERÍODO VEIO VAZIO, PUXA DA NOSSA MEMÓRIA CACHE DO FUNCIONÁRIO!
         if nome == "NomeNaoEncontrado": nome = memoria_cpf[cpf_grupo]['nome']
         if periodo == "MesAnoNaoEncontrado": periodo = memoria_cpf[cpf_grupo]['periodo']
 
-        # Fallback de segurança para valores
         if not cpf: cpf = cpf_grupo
         if not valor: valor = valor_grupo
 
-        # Montagem do título final
         titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
         titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
         titulo_limpo = re.sub(r'\s+', ' ', titulo_sanitizado).strip()
         nome_arquivo = f"{titulo_limpo}.pdf"
         
-        # Tratamento para nomes duplicados gerados acidentalmente
         contador = 1
         nome_base = titulo_limpo
         while nome_arquivo in holerites_dict:
@@ -189,22 +178,40 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
         logger.print(f"  🟢 HOLERITE -> '{nome_arquivo}' (Agrupou {len(pdf_doc)} páginas)")
         pdf_doc.close()
 
-    return holerites_dict
+    # Retorna os holerites e também o cofre de nomes para os comprovantes pegarem carona
+    return holerites_dict, memoria_cpf
 
-def processar_comprovantes(arquivos, logger, doc_nao_classificadas):
-    """Processa páginas de comprovantes isoladamente."""
+def processar_comprovantes(arquivos, logger, doc_nao_classificadas, memoria_cpf):
+    """Processa páginas de comprovantes isoladamente, pegando carona no nome dos holerites."""
     comprovantes_dict = {}
-    for nome, pdf_bytes in arquivos:
+    for nome_arq, pdf_bytes in arquivos:
         doc_fitz = fitz.open(stream=pdf_bytes, filetype="pdf")
         for i in range(len(doc_fitz)):
             texto_fitz = doc_fitz[i].get_text("text")
-            titulo = extrair_dados_comprovante(texto_fitz)
+            cpf, valor, nome_extraido = extrair_dados_comprovante(texto_fitz)
 
-            if titulo:
-                nome_arquivo = f"{titulo}.pdf"
+            if cpf and valor:
+                nome_final = ""
+                # 1. Tenta pegar a carona na memória do Holerite
+                if cpf in memoria_cpf and memoria_cpf[cpf]['nome'] != "NomeNaoEncontrado":
+                    nome_final = memoria_cpf[cpf]['nome']
+                # 2. Se não tiver holerite, usa o que tiver conseguido extrair do comprovante
+                elif nome_extraido:
+                    nome_final = nome_extraido
+                
+                # Monta o título
+                if nome_final:
+                    titulo = f"{nome_final} - {cpf} - R$ {valor} - RECIBO"
+                else:
+                    titulo = f"{cpf} - R$ {valor} - RECIBO"
+                
+                titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
+                nome_arquivo = f"{titulo_sanitizado}.pdf"
+
                 contador = 1
+                nome_base = titulo_sanitizado
                 while nome_arquivo in comprovantes_dict:
-                    nome_arquivo = f"{titulo}_{contador}.pdf"
+                    nome_arquivo = f"{nome_base}_{contador}.pdf"
                     contador += 1
                     
                 nova_pagina = fitz.open()
@@ -213,7 +220,7 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas):
                 nova_pagina.close()
                 logger.print(f"  🔵 COMPROVANTE -> '{nome_arquivo}'")
             else:
-                logger.print(f"  ⚠ Pág {i+1} de '{nome}' falhou na extração. Enviando p/ NAO CLASSIFICADAS.")
+                logger.print(f"  ⚠ Pág {i+1} de '{nome_arq}' falhou na extração. Enviando p/ NAO CLASSIFICADAS.")
                 doc_nao_classificadas.insert_pdf(doc_fitz, from_page=i, to_page=i)
         doc_fitz.close()
     return comprovantes_dict
@@ -366,10 +373,16 @@ if submit_button:
         arq_comprovantes = extrair_pdfs_de_uploads(up_comprovantes, app_logger) if up_comprovantes else []
 
         app_logger.print("\n>>> PROCESSANDO HOLERITES...")
-        holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas) if arq_holerites else {}
+        
+        # Recebe a memória preenchida com os nomes
+        if arq_holerites:
+            holerites_sep, memoria_cpf = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas)
+        else:
+            holerites_sep, memoria_cpf = {}, {}
         
         app_logger.print("\n>>> PROCESSANDO COMPROVANTES...")
-        comprovantes_sep = processar_comprovantes(arq_comprovantes, app_logger, doc_nao_classificadas) if arq_comprovantes else {}
+        # Envia a memória para processar_comprovantes
+        comprovantes_sep = processar_comprovantes(arq_comprovantes, app_logger, doc_nao_classificadas, memoria_cpf) if arq_comprovantes else {}
             
         app_logger.print("\n>>> UNINDO HOLERITES E COMPROVANTES...")
         pdfs_finais = unir_arquivos_memoria(holerites_sep, comprovantes_sep, app_logger)
