@@ -164,8 +164,9 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
             contador += 1
 
         holerites_dict[nome_arquivo] = pdf_doc.write()
-        pdf_doc.close()
+        # CORREÇÃO AQUI: Primeiro escrevemos o log com o len(pdf_doc), depois fechamos o documento.
         logger.print(f"  🟢 HOLERITE -> '{nome_arquivo}' (Agrupou {len(pdf_doc)} páginas)")
+        pdf_doc.close()
 
     return holerites_dict
 
