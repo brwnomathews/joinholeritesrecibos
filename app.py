@@ -29,12 +29,16 @@ class StreamlitLogger:
         self.log_placeholder.code(self.log_text, language="bash")
 
 # ==========================================
-# FUNÇÕES DE EXTRAÇÃO BASE
+# FUNÇÃO UNIFICADA DE EXTRAÇÃO
 # ==========================================
-def extrair_dados_basicos(texto):
-    """Extrai rapidamente CPF e Valor para guiar o agrupamento de páginas de Holerites."""
+def extrair_dados_completos(texto):
+    """Extrai CPF, Valor, Nome e Competência em uma única passada de texto."""
     cpf = None
     valor = None
+    nome = "NomeNaoEncontrado"
+    periodo = "MesAnoNaoEncontrado"
+
+    # Extração de CPF
     match_cpf = re.search(r'CPF:\s*([\d\.\-]+)', texto, re.IGNORECASE)
     if match_cpf:
         cpf_bruto = match_cpf.group(1).strip()
@@ -43,52 +47,35 @@ def extrair_dados_basicos(texto):
         else:
             cpf = cpf_bruto 
 
+    # Extração de Valor
     match_valor = re.search(r'SALÁRIO LÍQUIDO:[^\d]*([\d\.]+,[\d]{2})', texto, re.IGNORECASE)
     if match_valor:
         valor = match_valor.group(1)
-    return cpf, valor
 
-def extrair_titulo_holerite(texto):
-    """Extrai o título completo baseando-se nas 'linhas âncora' identificadas."""
-    if not texto: return "Titulo_Vazio"
-
-    cpf, valor = extrair_dados_basicos(texto)
-    if not cpf: cpf = "CPFNaoEncontrado"
-    if not valor: valor = "ValorNaoEncontrado"
-
-    nome = "NomeNaoEncontrado"
-    periodo = "MesAnoNaoEncontrado"
-
-    # Quebra o texto em linhas e remove espaços vazios nas pontas
+    # Limpa linhas vazias
     linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
     
     for i, linha in enumerate(linhas):
         linha_upper = linha.upper()
 
-        # 1. Extração do Período/Competência (Lógica flexibilizada)
-        # ^ e $ garantem que é a linha inteira. 
-        # [\s/]+ aceita 1 espaço, vários espaços ou uma barra entre o mês e o ano.
-        if periodo == "MesAnoNaoEncontrado":
-            match_periodo = re.match(r'^(0[1-9]|1[0-2])[\s/]+(20[0-3]\d|2040)$', linha)
-            if match_periodo:
-                periodo = f"{match_periodo.group(1)}_{match_periodo.group(2)}"
+        # Extração de Competência (Sua regra matemática exata)
+        if periodo == "MesAnoNaoEncontrado" and len(linha) == 7:
+            if re.match(r'^[01]\d\s(?:20[0-3]\d|2040)$', linha):
+                periodo = linha.replace(' ', '_')
 
-        # 2. Extração do Nome (Linha imediatamente ABAIXO do CPF)
+        # Extração do Nome
         if 'CPF:' in linha_upper and nome == "NomeNaoEncontrado":
-            if i + 1 < len(linhas): # Garante que existe uma linha de baixo
+            if i + 1 < len(linhas):
                 candidato = linhas[i+1].strip()
-                # Verifica se não bateu na palavra DATA por algum motivo de formatação
                 if not candidato.upper().startswith('DATA'):
-                    nome = re.sub(r'\d+', '', candidato).strip() # Limpa possíveis números
+                    nome = re.sub(r'\d+', '', candidato).strip()
 
-    # Limpeza final de formatação do nome
+    # Formatação do nome
     if nome != "NomeNaoEncontrado": 
         nome = re.sub(r'\s+', ' ', nome).strip() 
         nome = nome.strip(' :,-_')
 
-    titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
-    titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
-    return re.sub(r'\s+', ' ', titulo_sanitizado).strip()
+    return cpf, valor, nome, periodo
 
 def extrair_dados_comprovante(texto_pagina):
     """Extrai os dados do comprovante usando expressões regulares."""
@@ -111,7 +98,7 @@ def extrair_dados_comprovante(texto_pagina):
 # UTILITÁRIO DE UPLOAD
 # ==========================================
 def extrair_pdfs_de_uploads(uploaded_files, logger):
-    """Lê ficheiros PDF soltos ou descompacta ficheiros ZIP diretamente na memória."""
+    """Lê ficheiros PDF soltos ou descompacta ficheiros ZIP."""
     arquivos_extraidos = []
     for file in uploaded_files:
         if file.name.lower().endswith('.zip'):
@@ -128,46 +115,72 @@ def extrair_pdfs_de_uploads(uploaded_files, logger):
     return arquivos_extraidos
 
 # ==========================================
-# PROCESSAMENTO ESPECÍFICO
+# PROCESSAMENTO ESPECÍFICO (HOLERITES COM CACHE/MEMÓRIA)
 # ==========================================
 def processar_holerites(arquivos, logger, doc_nao_classificadas):
-    """Processa e agrupa páginas de holerites baseando-se no CPF e Valor."""
     holerites_dict = {}
     agrupamento = {}
+    # MEMÓRIA INTELIGENTE: Guarda Nome e Período de cada CPF para herdar nos próximos arquivos do mesmo funcionário
+    memoria_cpf = defaultdict(lambda: {'nome': "NomeNaoEncontrado", 'periodo': "MesAnoNaoEncontrado"})
 
-    for nome, pdf_bytes in arquivos:
+    for nome_arq, pdf_bytes in arquivos:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         cpf_atual = None
         valor_atual = None
 
         for i in range(len(doc)):
             texto = doc[i].get_text("text")
-            cpf, valor = extrair_dados_basicos(texto)
+            cpf, valor, nome, periodo = extrair_dados_completos(texto)
 
+            # Atualiza variáveis correntes
             if cpf: cpf_atual = cpf
             if valor: valor_atual = valor
+            
+            # Alimenta a memória para este CPF
+            if cpf_atual:
+                if nome != "NomeNaoEncontrado": memoria_cpf[cpf_atual]['nome'] = nome
+                if periodo != "MesAnoNaoEncontrado": memoria_cpf[cpf_atual]['periodo'] = periodo
 
+            # Pula páginas completamente sem identificação
             if not cpf_atual:
                 doc_nao_classificadas.insert_pdf(doc, from_page=i, to_page=i)
-                logger.print(f"  ⚪ Pág {i+1} de '{nome}' sem CPF -> Não Classificada.")
+                logger.print(f"  ⚪ Pág {i+1} de '{nome_arq}' sem CPF -> Não Classificada.")
                 continue
 
+            # Agrupa os bytes do pdf baseando-se no CPF e Valor
             chave = (cpf_atual, valor_atual)
             if chave not in agrupamento:
                 agrupamento[chave] = fitz.open()
             agrupamento[chave].insert_pdf(doc, from_page=i, to_page=i)
         doc.close()
 
+    # Geração dos títulos e arquivos finais
     for chave, pdf_doc in agrupamento.items():
+        cpf_grupo, valor_grupo = chave
         texto_completo = ""
         for i in range(len(pdf_doc)):
             texto_completo += pdf_doc[i].get_text("text") + "\n"
 
-        titulo = extrair_titulo_holerite(texto_completo)
-        nome_arquivo = f"{titulo}.pdf"
+        # Tenta extrair normalmente
+        cpf, valor, nome, periodo = extrair_dados_completos(texto_completo)
+
+        # SE O NOME OU PERÍODO VEIO VAZIO, PUXA DA NOSSA MEMÓRIA CACHE DO FUNCIONÁRIO!
+        if nome == "NomeNaoEncontrado": nome = memoria_cpf[cpf_grupo]['nome']
+        if periodo == "MesAnoNaoEncontrado": periodo = memoria_cpf[cpf_grupo]['periodo']
+
+        # Fallback de segurança para valores
+        if not cpf: cpf = cpf_grupo
+        if not valor: valor = valor_grupo
+
+        # Montagem do título final
+        titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
+        titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
+        titulo_limpo = re.sub(r'\s+', ' ', titulo_sanitizado).strip()
+        nome_arquivo = f"{titulo_limpo}.pdf"
         
+        # Tratamento para nomes duplicados gerados acidentalmente
         contador = 1
-        nome_base = titulo
+        nome_base = titulo_limpo
         while nome_arquivo in holerites_dict:
             nome_arquivo = f"{nome_base}_{contador}.pdf"
             contador += 1
