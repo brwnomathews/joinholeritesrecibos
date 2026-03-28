@@ -58,7 +58,7 @@ def extrair_dados_completos(texto):
     for i, linha in enumerate(linhas):
         linha_upper = linha.upper()
 
-        # Extração de Competência (Sua regra matemática exata)
+        # Extração de Competência
         if periodo == "MesAnoNaoEncontrado" and len(linha) == 7:
             if re.match(r'^[01]\d\s(?:20[0-3]\d|2040)$', linha):
                 periodo = linha.replace(' ', '_')
@@ -78,10 +78,11 @@ def extrair_dados_completos(texto):
     return cpf, valor, nome, periodo
 
 def extrair_dados_comprovante(texto_pagina):
-    """Extrai os dados isolados do comprovante usando expressões regulares."""
+    """Extrai os dados isolados do comprovante usando expressões regulares mais permissivas."""
     cpf_pattern = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
     valor_pattern = re.compile(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b")
-    nome_pattern = re.compile(r"(?:Funcionário|Favorecido):\s*(.*?)\s*CPF:", re.DOTALL)
+    # Padrão de nome mais flexível caso exista um cabeçalho reconhecível
+    nome_pattern = re.compile(r"(?:Funcionário|Favorecido|Nome)[:\s]+(.*?)(?=\s*CPF:|\s*-|\r|\n|$)", re.IGNORECASE)
 
     cpf_match = cpf_pattern.search(texto_pagina)
     valor_match = valor_pattern.search(texto_pagina)
@@ -119,7 +120,6 @@ def extrair_pdfs_de_uploads(uploaded_files, logger):
 def processar_holerites(arquivos, logger, doc_nao_classificadas):
     holerites_dict = {}
     agrupamento = {}
-    # MEMÓRIA INTELIGENTE: Guarda Nome e Período de cada CPF
     memoria_cpf = defaultdict(lambda: {'nome': "NomeNaoEncontrado", 'periodo': "MesAnoNaoEncontrado"})
 
     for nome_arq, pdf_bytes in arquivos:
@@ -178,24 +178,40 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
         logger.print(f"  🟢 HOLERITE -> '{nome_arquivo}' (Agrupou {len(pdf_doc)} páginas)")
         pdf_doc.close()
 
-    # Retorna os holerites e também o cofre de nomes para os comprovantes pegarem carona
     return holerites_dict, memoria_cpf
 
 def processar_comprovantes(arquivos, logger, doc_nao_classificadas, memoria_cpf):
-    """Processa páginas de comprovantes isoladamente, pegando carona no nome dos holerites."""
     comprovantes_dict = {}
+    
+    # CRIANDO DICIONÁRIO REVERSO (Nome -> CPF) PARA BUSCA DE CARONA
+    map_nome_cpf = {}
+    for cpf_mem, dados in memoria_cpf.items():
+        if dados['nome'] != "NomeNaoEncontrado":
+            nome_limpo = re.sub(r'\s+', ' ', dados['nome'].strip().upper())
+            map_nome_cpf[nome_limpo] = cpf_mem
+
     for nome_arq, pdf_bytes in arquivos:
         doc_fitz = fitz.open(stream=pdf_bytes, filetype="pdf")
         for i in range(len(doc_fitz)):
             texto_fitz = doc_fitz[i].get_text("text")
             cpf, valor, nome_extraido = extrair_dados_comprovante(texto_fitz)
 
+            # BUSCA REVERSA: Se tem Valor mas não tem CPF, varre o texto atrás dos nomes salvos
+            if not cpf and valor:
+                texto_upper = re.sub(r'\s+', ' ', texto_fitz.upper()) # Normaliza espaços do texto do PDF
+                for nome_conhecido, cpf_associado in map_nome_cpf.items():
+                    if nome_conhecido in texto_upper:
+                        cpf = cpf_associado
+                        nome_extraido = nome_conhecido # Aproveita o nome correto
+                        logger.print(f"  🔍 Resgate! CPF {cpf} encontrado via Nome '{nome_conhecido}'")
+                        break
+
+            # Processamento final do Comprovante (só segue se tiver CPF e Valor)
             if cpf and valor:
                 nome_final = ""
-                # 1. Tenta pegar a carona na memória do Holerite
+                # Prioriza o nome bonito salvo na memória do Holerite
                 if cpf in memoria_cpf and memoria_cpf[cpf]['nome'] != "NomeNaoEncontrado":
                     nome_final = memoria_cpf[cpf]['nome']
-                # 2. Se não tiver holerite, usa o que tiver conseguido extrair do comprovante
                 elif nome_extraido:
                     nome_final = nome_extraido
                 
@@ -329,7 +345,6 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
 st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout="wide")
 st.title("📄 Processador e Unificador de PDFs")
 
-# O FORMULÁRIO: Garante que os arquivos enviados sejam limpos após o clique
 with st.form("upload_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -345,12 +360,10 @@ with st.form("upload_form", clear_on_submit=True):
     st.markdown("---")
     submit_button = st.form_submit_button("🚀 Iniciar Processamento", use_container_width=True)
 
-# Container onde a mensagem e o botão de download irão morar (Acima do log)
 container_resultados = st.container()
 
 if submit_button:
     
-    # Limpa o estado anterior
     st.session_state.processed_zip = None
 
     qtd_holerites = len(up_holerites) if up_holerites else 0
@@ -374,14 +387,12 @@ if submit_button:
 
         app_logger.print("\n>>> PROCESSANDO HOLERITES...")
         
-        # Recebe a memória preenchida com os nomes
         if arq_holerites:
             holerites_sep, memoria_cpf = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas)
         else:
             holerites_sep, memoria_cpf = {}, {}
         
         app_logger.print("\n>>> PROCESSANDO COMPROVANTES...")
-        # Envia a memória para processar_comprovantes
         comprovantes_sep = processar_comprovantes(arq_comprovantes, app_logger, doc_nao_classificadas, memoria_cpf) if arq_comprovantes else {}
             
         app_logger.print("\n>>> UNINDO HOLERITES E COMPROVANTES...")
@@ -400,10 +411,8 @@ if submit_button:
                 zip_file.writestr(nome_arquivo, pdf_bytes)
             zip_file.writestr("relatorio_processamento.txt", app_logger.log_text)
 
-        # Salva o arquivo em memória da sessão
         st.session_state.processed_zip = zip_buffer.getvalue()
 
-# Exibe a mensagem de sucesso e o botão APENAS se o arquivo estiver salvo na sessão
 if st.session_state.processed_zip:
     with container_resultados:
         st.success("✨ Processamento concluído com sucesso! \n\n*Os campos de upload acima foram limpos e estão prontos para uma nova execução.*")
