@@ -48,10 +48,9 @@ def extrair_titulo_holerite(texto):
     """Extrai o título completo após as páginas estarem agrupadas."""
     if not texto: return "Titulo_Vazio"
 
-    # 1. Extrair Período (Mês_Ano)
+    # 1. Extrair Período (Mês_Ano) de forma mais robusta, ignorando quebras de linha
     periodo = "MesAnoNaoEncontrado"
-    # REGEX ATUALIZADO: Garante que o mês seja de 01 a 12 (ignora finais de CNPJ como 45/0001)
-    match_periodo = re.search(r'\b(0[1-9]|1[0-2])/\d{4}\b', texto)
+    match_periodo = re.search(r'(0[1-9]|1[0-2])/\d{4}', texto)
     if match_periodo: 
         periodo = match_periodo.group(0).replace('/', '_')
 
@@ -60,20 +59,32 @@ def extrair_titulo_holerite(texto):
     if not cpf: cpf = "CPFNaoEncontrado"
     if not valor: valor = "ValorNaoEncontrado"
 
-    # 3. Extrair Nome
+    # 3. Extrair Nome com a lógica linha a linha (a mais estável)
     nome = "NomeNaoEncontrado"
-    # REGEX ATUALIZADO: Busca tudo o que estiver entre "DATA:" e "CPF:" (ignora quebras de linha)
-    match_nome = re.search(r'DATA:\s*(.*?)\s*CPF:', texto, re.IGNORECASE | re.DOTALL)
+    linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
     
-    if match_nome and match_nome.group(1).strip():
-        nome_extraido = match_nome.group(1).strip()
-        nome_limpo = re.sub(r'\d+', '', nome_extraido) # Tira números acidentais
-        nome = re.sub(r'\s+', ' ', nome_limpo).strip() # Remove quebras de linha e normaliza
-        
-    if not nome or nome == "":
-        nome = "NomeNaoEncontrado"
+    for i, linha in enumerate(linhas):
+        if 'CPF:' in linha.upper():
+            partes = re.split(r'CPF:', linha, flags=re.IGNORECASE)
+            candidato = partes[0].strip()
+            
+            # Se o nome estiver na mesma linha do CPF
+            if candidato and not candidato.upper().startswith('DATA'):
+                nome = re.sub(r'\d+', '', candidato).strip()
+            # Se não, olha para a linha de cima
+            elif i > 0:
+                candidato = linhas[i-1]
+                if not candidato.upper().startswith('DATA'):
+                    nome = re.sub(r'\d+', '', candidato).strip()
+                # Se a linha de cima for "DATA:", pula ela e pega a próxima acima
+                elif i > 1:
+                    nome = re.sub(r'\d+', '', linhas[i-2]).strip()
+            break
+            
+    if nome != "NomeNaoEncontrado": 
+        nome = nome.strip(' :,-_')
+        nome = re.sub(r'\s+', ' ', nome).strip() # Limpa espaços duplos
 
-    # 4. Montar Título
     titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
     titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
     return re.sub(r'\s+', ' ', titulo_sanitizado).strip()
@@ -123,7 +134,6 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
     holerites_dict = {}
     agrupamento = {}
 
-    # Passo 1: Agrupar páginas por CPF e Valor (para lidar com holerites de 2 páginas)
     for nome, pdf_bytes in arquivos:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         cpf_atual = None
@@ -147,7 +157,6 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
             agrupamento[chave].insert_pdf(doc, from_page=i, to_page=i)
         doc.close()
 
-    # Passo 2: Nomear e gerar PDFs finais agrupados
     for chave, pdf_doc in agrupamento.items():
         texto_completo = ""
         for i in range(len(pdf_doc)):
@@ -299,9 +308,8 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
 st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout="wide")
 st.title("📄 Processador e Unificador de PDFs")
 
-# CRIANDO AS DUAS ÁREAS DE UPLOAD SEPARADAS (COLUNAS)
+# ÁREAS DE UPLOAD
 col1, col2 = st.columns(2)
-
 with col1:
     st.markdown("### 📄 1. Enviar Holerites")
     st.markdown("Arraste PDFs soltos ou um único `.zip`")
@@ -312,24 +320,25 @@ with col2:
     st.markdown("Arraste PDFs soltos ou um único `.zip`")
     up_comprovantes = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="comprovantes")
 
-st.markdown("---") # Linha de separação visual
+st.markdown("---")
 
-# BOTÃO DE INICIAR O PROCESSAMENTO GERAL
 if st.button("🚀 Iniciar Processamento", use_container_width=True):
     
-    # Contagem para o limite de 50 ficheiros de segurança
     qtd_holerites = len(up_holerites) if up_holerites else 0
     qtd_comprovantes = len(up_comprovantes) if up_comprovantes else 0
 
     if qtd_holerites > 50 or qtd_comprovantes > 50:
         st.error("🛑 **Limite de ficheiros excedido!**\n\n"
-                 "Selecionou mais de 50 ficheiros num dos campos. O limite para envio de ficheiros soltos é de **50 PDFs de cada vez** para garantir o melhor desempenho.\n\n"
-                 "👉 **O que fazer:** Coloque todos os seus PDFs dentro de uma pasta compactada (**ficheiro .zip**) e faça o upload de apenas **um único ficheiro .zip** na área correspondente. O sistema irá extrair todos eles automaticamente!")
+                 "Selecionou mais de 50 ficheiros num dos campos. O limite para envio de ficheiros soltos é de **50 PDFs de cada vez**.\n\n"
+                 "👉 **O que fazer:** Coloque todos os seus PDFs dentro de uma pasta compactada (**ficheiro .zip**) e faça o upload de apenas **um único ficheiro .zip** na área correspondente!")
     
     elif not up_holerites and not up_comprovantes:
         st.warning("⚠️ Por favor, faça o upload de ficheiros em pelo menos uma das áreas acima para iniciar o processo.")
     
     else:
+        # AQUI ESTÁ O NOVO LAYOUT: Container para os resultados ficar acima do terminal
+        container_resultados = st.container()
+        
         st.markdown("### 🖥️ Terminal de Processamento")
         app_logger = StreamlitLogger()
         doc_nao_classificadas = fitz.open()
@@ -337,18 +346,15 @@ if st.button("🚀 Iniciar Processamento", use_container_width=True):
         arq_holerites = extrair_pdfs_de_uploads(up_holerites, app_logger) if up_holerites else []
         arq_comprovantes = extrair_pdfs_de_uploads(up_comprovantes, app_logger) if up_comprovantes else []
 
-        # Processamento
         app_logger.print("\n>>> PROCESSANDO HOLERITES...")
         holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas) if arq_holerites else {}
         
         app_logger.print("\n>>> PROCESSANDO COMPROVANTES...")
         comprovantes_sep = processar_comprovantes(arq_comprovantes, app_logger, doc_nao_classificadas) if arq_comprovantes else {}
             
-        # União
         app_logger.print("\n>>> UNINDO HOLERITES E COMPROVANTES...")
         pdfs_finais = unir_arquivos_memoria(holerites_sep, comprovantes_sep, app_logger)
         
-        # Páginas não classificadas
         if len(doc_nao_classificadas) > 0:
             app_logger.print(f"\n>>> FORAM ENCONTRADAS {len(doc_nao_classificadas)} PÁGINA(S) NÃO CLASSIFICADA(S)!")
             pdfs_finais["NAO_CLASSIFICADAS.pdf"] = doc_nao_classificadas.write()
@@ -356,18 +362,19 @@ if st.button("🚀 Iniciar Processamento", use_container_width=True):
         
         app_logger.print("\n>>> FINALIZADO! Preparando ficheiro ZIP de saída...")
 
-        # ZIP de Saída
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for nome_arquivo, pdf_bytes in pdfs_finais.items():
                 zip_file.writestr(nome_arquivo, pdf_bytes)
             zip_file.writestr("relatorio_processamento.txt", app_logger.log_text)
 
-        st.success("✨ Processamento concluído com sucesso!")
-        st.download_button(
-            label="⬇️ Baixar Arquivos Processados (.zip)",
-            data=zip_buffer.getvalue(),
-            file_name="arquivos_processados.zip",
-            mime="application/zip",
-            use_container_width=True
-        )
+        # Injetando a mensagem de sucesso e o botão de download no container que criamos ACIMA do terminal
+        with container_resultados:
+            st.success("✨ Processamento concluído com sucesso!")
+            st.download_button(
+                label="⬇️ Baixar Arquivos Processados (.zip)",
+                data=zip_buffer.getvalue(),
+                file_name="arquivos_processados.zip",
+                mime="application/zip",
+                use_container_width=True
+            )
