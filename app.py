@@ -184,7 +184,6 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
         for i in range(len(doc_fitz)):
             texto_fitz = doc_fitz[i].get_text("text")
             
-            # Não tentamos mais adivinhar o nome pelo texto!
             cpf, valor = extrair_dados_comprovante(texto_fitz)
             nome_final = None
 
@@ -192,7 +191,6 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
             if not cpf and valor:
                 texto_upper = re.sub(r'\s+', ' ', texto_fitz.upper())
                 for nome_conhecido, cpf_associado in map_nome_cpf.items():
-                    # Pergunta: Esse nome validado está dentro do texto desta página?
                     if nome_conhecido in texto_upper:
                         cpf = cpf_associado
                         nome_final = map_cpf_nome[cpf] # Resgata a formatação correta
@@ -201,11 +199,9 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
 
             # Processamento final do Comprovante
             if cpf and valor:
-                # Faltou o nome? Ele olha o CPF e busca no dicionário o nome do título!
                 if not nome_final and cpf in map_cpf_nome:
                     nome_final = map_cpf_nome[cpf]
                 
-                # Monta o título apenas com o que é garantido
                 if nome_final:
                     titulo = f"{nome_final} - {cpf} - R$ {valor} - RECIBO"
                 else:
@@ -276,6 +272,7 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
             # Lógica 1: Correspondência exata de valor
             for recibo in recibos:
                 if not recibo['usado'] and recibo['valor'] is not None and abs(recibo['valor'] - valor_original) < tolerancia:
+                    # Adicionado o prefixo _UNIDO -
                     novo_nome = "_UNIDO - " + original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
                     writer = PdfWriter()
                     pdf_orig = PdfReader(io.BytesIO(original['bytes']))
@@ -306,7 +303,8 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
                     if melhor_combinacao: break
                     
                 if melhor_combinacao:
-                    novo_nome = original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
+                    # Adicionado o prefixo _UNIDO -
+                    novo_nome = "_UNIDO - " + original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
                     writer = PdfWriter()
                     pdf_orig = PdfReader(io.BytesIO(original['bytes']))
                     for p in pdf_orig.pages: writer.add_page(p)
