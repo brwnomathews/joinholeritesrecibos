@@ -333,13 +333,15 @@ with st.form("upload_form", clear_on_submit=True):
     st.markdown("### 📅 1. Selecionar Competência")
     st.markdown("*(Obrigatório para iniciar o processamento)*")
     
-    col_mes, col_ano = st.columns(2)
+    # AQUI ESTÁ A ALTERAÇÃO: Proporção [1, 1, 6] para espremer as caixas em 1/4 do tamanho
+    col_mes, col_ano, col_vazia = st.columns([1, 1, 6])
+    
     with col_mes:
         meses_opcoes = [f"{i:02d}" for i in range(1, 14)] # 01 até 13
-        mes_selecionado = st.selectbox("Mês de Competência", options=meses_opcoes, index=None, placeholder="Selecione o Mês...")
+        mes_selecionado = st.selectbox("Mês de Competência", options=meses_opcoes, index=None, placeholder="Mês...")
     with col_ano:
         anos_opcoes = [str(i) for i in range(2024, 2031)] # 2024 até 2030
-        ano_selecionado = st.selectbox("Ano de Competência", options=anos_opcoes, index=None, placeholder="Selecione o Ano...")
+        ano_selecionado = st.selectbox("Ano de Competência", options=anos_opcoes, index=None, placeholder="Ano...")
 
     st.markdown("---")
     
@@ -366,7 +368,6 @@ if submit_button:
     qtd_holerites = len(up_holerites) if up_holerites else 0
     qtd_comprovantes = len(up_comprovantes) if up_comprovantes else 0
 
-    # NOVA TRAVA DE SEGURANÇA PARA A COMPETÊNCIA
     if not mes_selecionado or not ano_selecionado:
         st.error("🛑 **Atenção:** É obrigatório selecionar o **Mês** e o **Ano** de Competência na seção 1 para prosseguir!")
         
@@ -386,12 +387,10 @@ if submit_button:
         arq_holerites = extrair_pdfs_de_uploads(up_holerites, app_logger) if up_holerites else []
         arq_comprovantes = extrair_pdfs_de_uploads(up_comprovantes, app_logger) if up_comprovantes else []
 
-        # CONSOLIDAÇÃO DA COMPETÊNCIA (Ex: 02_2026)
         periodo_global = f"{mes_selecionado}_{ano_selecionado}"
 
         app_logger.print("\n>>> PROCESSANDO HOLERITES...")
         
-        # Envia a competência consolidada para o processador de holerites
         holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas, periodo_global) if arq_holerites else {}
         
         map_cpf_nome = {}
