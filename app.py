@@ -32,11 +32,10 @@ class StreamlitLogger:
 # FUNÇÃO UNIFICADA DE EXTRAÇÃO (HOLERITES)
 # ==========================================
 def extrair_dados_completos(texto):
-    """Extrai CPF, Valor, Nome e Competência em uma única passada de texto."""
+    """Extrai CPF, Valor e Nome. A competência agora é injetada manualmente."""
     cpf = None
     valor = None
     nome = "NomeNaoEncontrado"
-    periodo = "MesAnoNaoEncontrado"
 
     # Extração de CPF
     match_cpf = re.search(r'CPF:\s*([\d\.\-]+)', texto, re.IGNORECASE)
@@ -52,24 +51,13 @@ def extrair_dados_completos(texto):
     if match_valor:
         valor = match_valor.group(1)
 
-    # Limpa linhas vazias
+    # Limpa linhas vazias para buscar o nome
     linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
     
     for i, linha in enumerate(linhas):
         linha_upper = linha.upper()
-        linha_limpa = linha.strip()
 
-        # Extração de Competência (Com Plano B para meses sem o zero à esquerda)
-        if periodo == "MesAnoNaoEncontrado":
-            # Plano A: Formato completo com 7 caracteres (Ex: 02 2026 ou 11 2026)
-            if len(linha_limpa) == 7 and re.match(r'^[01]\d\s(?:20[0-3]\d|2040)$', linha_limpa):
-                periodo = linha_limpa.replace(' ', '_')
-            # Plano B: Formato com 6 caracteres, mês de 1 a 9 (Ex: 1 2026)
-            elif len(linha_limpa) == 6 and re.match(r'^[1-9]\s(?:20[0-3]\d|2040)$', linha_limpa):
-                # Adiciona o '0' à frente para manter o padrão no nome do ficheiro (01_2026)
-                periodo = "0" + linha_limpa.replace(' ', '_')
-
-        # Extração do Nome
+        # Extração do Nome (Linha abaixo do CPF)
         if 'CPF:' in linha_upper and nome == "NomeNaoEncontrado":
             if i + 1 < len(linhas):
                 candidato = linhas[i+1].strip()
@@ -81,10 +69,10 @@ def extrair_dados_completos(texto):
         nome = re.sub(r'\s+', ' ', nome).strip() 
         nome = nome.strip(' :,-_')
 
-    return cpf, valor, nome, periodo
+    return cpf, valor, nome
 
 def extrair_dados_comprovante(texto_pagina):
-    """Extrai APENAS CPF e Valor. O nome será buscado EXCLUSIVAMENTE via dicionário dos Holerites."""
+    """Extrai APENAS CPF e Valor."""
     cpf_pattern = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
     valor_pattern = re.compile(r"\b\d{1,3}(?:\.\d{3})*,\d{2}\b")
 
@@ -109,19 +97,14 @@ def extrair_pdfs_de_uploads(uploaded_files, logger):
                 with zipfile.ZipFile(file, 'r') as z:
                     for zip_info in z.infolist():
                         nome_arquivo = zip_info.filename.split('/')[-1]
-                        
-                        # Ignora ficheiros ocultos de Mac (como ._arquivo.pdf) e pastas
                         if zip_info.filename.lower().endswith('.pdf') and '__MACOSX' not in zip_info.filename and not nome_arquivo.startswith('._'):
                             pdf_bytes = z.read(zip_info.filename)
-                            
-                            # PROTEÇÃO: Só adiciona se o ficheiro tiver dados (não for vazio)
                             if len(pdf_bytes) > 0:
                                 arquivos_extraidos.append((nome_arquivo, pdf_bytes))
             except zipfile.BadZipFile:
                 logger.print(f"❌ Erro: O ficheiro '{file.name}' não é um ZIP válido.")
         elif file.name.lower().endswith('.pdf'):
             pdf_bytes = file.read()
-            # PROTEÇÃO: Só adiciona se o ficheiro tiver dados
             if len(pdf_bytes) > 0:
                 arquivos_extraidos.append((file.name, pdf_bytes))
     return arquivos_extraidos
@@ -129,10 +112,10 @@ def extrair_pdfs_de_uploads(uploaded_files, logger):
 # ==========================================
 # PROCESSAMENTO ESPECÍFICO
 # ==========================================
-def processar_holerites(arquivos, logger, doc_nao_classificadas):
+def processar_holerites(arquivos, logger, doc_nao_classificadas, periodo_global):
     holerites_dict = {}
     agrupamento = {}
-    memoria_cpf = defaultdict(lambda: {'nome': "NomeNaoEncontrado", 'periodo': "MesAnoNaoEncontrado"})
+    memoria_cpf = defaultdict(lambda: {'nome': "NomeNaoEncontrado"})
 
     for nome_arq, pdf_bytes in arquivos:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -141,14 +124,13 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
 
         for i in range(len(doc)):
             texto = doc[i].get_text("text")
-            cpf, valor, nome, periodo = extrair_dados_completos(texto)
+            cpf, valor, nome = extrair_dados_completos(texto)
 
             if cpf: cpf_atual = cpf
             if valor: valor_atual = valor
             
-            if cpf_atual:
-                if nome != "NomeNaoEncontrado": memoria_cpf[cpf_atual]['nome'] = nome
-                if periodo != "MesAnoNaoEncontrado": memoria_cpf[cpf_atual]['periodo'] = periodo
+            if cpf_atual and nome != "NomeNaoEncontrado":
+                memoria_cpf[cpf_atual]['nome'] = nome
 
             if not cpf_atual:
                 doc_nao_classificadas.insert_pdf(doc, from_page=i, to_page=i)
@@ -167,15 +149,14 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas):
         for i in range(len(pdf_doc)):
             texto_completo += pdf_doc[i].get_text("text") + "\n"
 
-        cpf, valor, nome, periodo = extrair_dados_completos(texto_completo)
+        cpf, valor, nome = extrair_dados_completos(texto_completo)
 
         if nome == "NomeNaoEncontrado": nome = memoria_cpf[cpf_grupo]['nome']
-        if periodo == "MesAnoNaoEncontrado": periodo = memoria_cpf[cpf_grupo]['periodo']
-
         if not cpf: cpf = cpf_grupo
         if not valor: valor = valor_grupo
 
-        titulo = f"{nome} - {cpf} - {periodo} - R$ {valor}"
+        # INJEÇÃO DA COMPETÊNCIA GLOBAL SELECIONADA PELO USUÁRIO
+        titulo = f"{nome} - {cpf} - {periodo_global} - R$ {valor}"
         titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
         titulo_limpo = re.sub(r'\s+', ' ', titulo_sanitizado).strip()
         nome_arquivo = f"{titulo_limpo}.pdf"
@@ -203,17 +184,17 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
             cpf, valor = extrair_dados_comprovante(texto_fitz)
             nome_final = None
 
-            # BUSCA REVERSA: Se tem Valor mas FALTOU CPF, varre o texto atrás dos Nomes do Título do Holerite
+            # BUSCA REVERSA
             if not cpf and valor:
                 texto_upper = re.sub(r'\s+', ' ', texto_fitz.upper())
                 for nome_conhecido, cpf_associado in map_nome_cpf.items():
                     if nome_conhecido in texto_upper:
                         cpf = cpf_associado
-                        nome_final = map_cpf_nome[cpf] # Resgata a formatação correta
+                        nome_final = map_cpf_nome[cpf] 
                         logger.print(f"  🔍 Resgate! CPF {cpf} encontrado via Nome '{nome_conhecido}'")
                         break
 
-            # Processamento final do Comprovante
+            # Processamento final
             if cpf and valor:
                 if not nome_final and cpf in map_cpf_nome:
                     nome_final = map_cpf_nome[cpf]
@@ -288,7 +269,6 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
             # Lógica 1: Correspondência exata de valor
             for recibo in recibos:
                 if not recibo['usado'] and recibo['valor'] is not None and abs(recibo['valor'] - valor_original) < tolerancia:
-                    # Adicionado o prefixo _UNIDO -
                     novo_nome = "_UNIDO - " + original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
                     writer = PdfWriter()
                     pdf_orig = PdfReader(io.BytesIO(original['bytes']))
@@ -319,7 +299,6 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
                     if melhor_combinacao: break
                     
                 if melhor_combinacao:
-                    # Adicionado o prefixo _UNIDO -
                     novo_nome = "_UNIDO - " + original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
                     writer = PdfWriter()
                     pdf_orig = PdfReader(io.BytesIO(original['bytes']))
@@ -350,14 +329,28 @@ st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout=
 st.title("📄 Processador e Unificador de PDFs")
 
 with st.form("upload_form", clear_on_submit=True):
+    
+    st.markdown("### 📅 1. Selecionar Competência")
+    st.markdown("*(Obrigatório para iniciar o processamento)*")
+    
+    col_mes, col_ano = st.columns(2)
+    with col_mes:
+        meses_opcoes = [f"{i:02d}" for i in range(1, 14)] # 01 até 13
+        mes_selecionado = st.selectbox("Mês de Competência", options=meses_opcoes, index=None, placeholder="Selecione o Mês...")
+    with col_ano:
+        anos_opcoes = [str(i) for i in range(2024, 2031)] # 2024 até 2030
+        ano_selecionado = st.selectbox("Ano de Competência", options=anos_opcoes, index=None, placeholder="Selecione o Ano...")
+
+    st.markdown("---")
+    
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("### 📄 1. Enviar Holerites")
+        st.markdown("### 📄 2. Enviar Holerites")
         st.markdown("Arraste PDFs soltos ou um único `.zip`")
         up_holerites = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="holerites")
 
     with col2:
-        st.markdown("### 🧾 2. Enviar Comprovantes")
+        st.markdown("### 🧾 3. Enviar Comprovantes")
         st.markdown("Arraste PDFs soltos ou um único `.zip`")
         up_comprovantes = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="comprovantes")
 
@@ -373,7 +366,11 @@ if submit_button:
     qtd_holerites = len(up_holerites) if up_holerites else 0
     qtd_comprovantes = len(up_comprovantes) if up_comprovantes else 0
 
-    if qtd_holerites > 50 or qtd_comprovantes > 50:
+    # NOVA TRAVA DE SEGURANÇA PARA A COMPETÊNCIA
+    if not mes_selecionado or not ano_selecionado:
+        st.error("🛑 **Atenção:** É obrigatório selecionar o **Mês** e o **Ano** de Competência na seção 1 para prosseguir!")
+        
+    elif qtd_holerites > 50 or qtd_comprovantes > 50:
         st.error("🛑 **Limite de ficheiros excedido!**\n\n"
                  "Selecionou mais de 50 ficheiros num dos campos. O limite para envio de ficheiros soltos é de **50 PDFs de cada vez**.\n\n"
                  "👉 **O que fazer:** Coloque todos os seus PDFs dentro de uma pasta compactada (**ficheiro .zip**) e faça o upload de apenas **um único ficheiro .zip** na área correspondente!")
@@ -389,11 +386,14 @@ if submit_button:
         arq_holerites = extrair_pdfs_de_uploads(up_holerites, app_logger) if up_holerites else []
         arq_comprovantes = extrair_pdfs_de_uploads(up_comprovantes, app_logger) if up_comprovantes else []
 
+        # CONSOLIDAÇÃO DA COMPETÊNCIA (Ex: 02_2026)
+        periodo_global = f"{mes_selecionado}_{ano_selecionado}"
+
         app_logger.print("\n>>> PROCESSANDO HOLERITES...")
         
-        holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas) if arq_holerites else {}
+        # Envia a competência consolidada para o processador de holerites
+        holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas, periodo_global) if arq_holerites else {}
         
-        # MAPA DE NOMES E CPFS (LIDOS DIRETAMENTE DOS TÍTULOS DOS HOLERITES)
         map_cpf_nome = {}
         map_nome_cpf = {}
         for nome_arquivo in holerites_sep.keys():
