@@ -57,11 +57,17 @@ def extrair_dados_completos(texto):
     
     for i, linha in enumerate(linhas):
         linha_upper = linha.upper()
+        linha_limpa = linha.strip()
 
-        # Extração de Competência
-        if periodo == "MesAnoNaoEncontrado" and len(linha) == 7:
-            if re.match(r'^[01]\d\s(?:20[0-3]\d|2040)$', linha):
-                periodo = linha.replace(' ', '_')
+        # Extração de Competência (Com Plano B para meses sem o zero à esquerda)
+        if periodo == "MesAnoNaoEncontrado":
+            # Plano A: Formato completo com 7 caracteres (Ex: 02 2026 ou 11 2026)
+            if len(linha_limpa) == 7 and re.match(r'^[01]\d\s(?:20[0-3]\d|2040)$', linha_limpa):
+                periodo = linha_limpa.replace(' ', '_')
+            # Plano B: Formato com 6 caracteres, mês de 1 a 9 (Ex: 1 2026)
+            elif len(linha_limpa) == 6 and re.match(r'^[1-9]\s(?:20[0-3]\d|2040)$', linha_limpa):
+                # Adiciona o '0' à frente para manter o padrão no nome do ficheiro (01_2026)
+                periodo = "0" + linha_limpa.replace(' ', '_')
 
         # Extração do Nome
         if 'CPF:' in linha_upper and nome == "NomeNaoEncontrado":
