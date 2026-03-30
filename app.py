@@ -276,7 +276,7 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
             # Lógica 1: Correspondência exata de valor
             for recibo in recibos:
                 if not recibo['usado'] and recibo['valor'] is not None and abs(recibo['valor'] - valor_original) < tolerancia:
-                    novo_nome = original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
+                    novo_nome = "_UNIDO - " + original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
                     writer = PdfWriter()
                     pdf_orig = PdfReader(io.BytesIO(original['bytes']))
                     for p in pdf_orig.pages: writer.add_page(p)
