@@ -11,22 +11,26 @@ from PyPDF2 import PdfReader, PdfWriter
 # Suprimir avisos do pdfminer
 logging.getLogger('pdfminer.pdfpage').setLevel(logging.ERROR)
 
-# Inicializa o armazenamento de sessão para manter o ZIP gerado na tela após a limpeza
-if "processed_zip" not in st.session_state:
-    st.session_state.processed_zip = None
+# ==========================================
+# GERENCIAMENTO DE ESTADO (MEMÓRIA DA TELA)
+# ==========================================
+if "reset_key" not in st.session_state: st.session_state.reset_key = 0
+if "processed_zip" not in st.session_state: st.session_state.processed_zip = None
+if "terminal_log" not in st.session_state: st.session_state.terminal_log = ""
+if "success_msg" not in st.session_state: st.session_state.success_msg = False
 
 # ==========================================
 # CLASSE DE LOG EM TEMPO REAL
 # ==========================================
 class StreamlitLogger:
-    def __init__(self):
+    def __init__(self, placeholder):
         self.log_text = ""
-        self.log_placeholder = st.empty()
+        self.placeholder = placeholder
 
     def print(self, message):
         """Adiciona a mensagem ao log e atualiza a interface."""
         self.log_text += str(message) + "\n"
-        self.log_placeholder.code(self.log_text, language="bash")
+        self.placeholder.code(self.log_text, language="bash")
 
 # ==========================================
 # FUNÇÃO UNIFICADA DE EXTRAÇÃO (HOLERITES)
@@ -37,7 +41,6 @@ def extrair_dados_completos(texto):
     valor = None
     nome = "NomeNaoEncontrado"
 
-    # Extração de CPF
     match_cpf = re.search(r'CPF:\s*([\d\.\-]+)', texto, re.IGNORECASE)
     if match_cpf:
         cpf_bruto = match_cpf.group(1).strip()
@@ -46,25 +49,18 @@ def extrair_dados_completos(texto):
         else:
             cpf = cpf_bruto 
 
-    # Extração de Valor
     match_valor = re.search(r'SALÁRIO LÍQUIDO:[^\d]*([\d\.]+,[\d]{2})', texto, re.IGNORECASE)
     if match_valor:
         valor = match_valor.group(1)
 
-    # Limpa linhas vazias para buscar o nome
     linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
-    
     for i, linha in enumerate(linhas):
-        linha_upper = linha.upper()
-
-        # Extração do Nome (Linha abaixo do CPF)
-        if 'CPF:' in linha_upper and nome == "NomeNaoEncontrado":
+        if 'CPF:' in linha.upper() and nome == "NomeNaoEncontrado":
             if i + 1 < len(linhas):
                 candidato = linhas[i+1].strip()
                 if not candidato.upper().startswith('DATA'):
                     nome = re.sub(r'\d+', '', candidato).strip()
 
-    # Formatação do nome
     if nome != "NomeNaoEncontrado": 
         nome = re.sub(r'\s+', ' ', nome).strip() 
         nome = nome.strip(' :,-_')
@@ -155,7 +151,6 @@ def processar_holerites(arquivos, logger, doc_nao_classificadas, periodo_global)
         if not cpf: cpf = cpf_grupo
         if not valor: valor = valor_grupo
 
-        # INJEÇÃO DA COMPETÊNCIA GLOBAL SELECIONADA PELO USUÁRIO
         titulo = f"{nome} - {cpf} - {periodo_global} - R$ {valor}"
         titulo_sanitizado = re.sub(r'[\\/*?:"<>|]', '_', titulo)
         titulo_limpo = re.sub(r'\s+', ' ', titulo_sanitizado).strip()
@@ -184,7 +179,6 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
             cpf, valor = extrair_dados_comprovante(texto_fitz)
             nome_final = None
 
-            # BUSCA REVERSA
             if not cpf and valor:
                 texto_upper = re.sub(r'\s+', ' ', texto_fitz.upper())
                 for nome_conhecido, cpf_associado in map_nome_cpf.items():
@@ -194,7 +188,6 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
                         logger.print(f"  🔍 Resgate! CPF {cpf} encontrado via Nome '{nome_conhecido}'")
                         break
 
-            # Processamento final
             if cpf and valor:
                 if not nome_final and cpf in map_cpf_nome:
                     nome_final = map_cpf_nome[cpf]
@@ -228,7 +221,6 @@ def processar_comprovantes(arquivos, logger, doc_nao_classificadas, map_cpf_nome
 # UNIÃO DOS ARQUIVOS
 # ==========================================
 def extrair_cpf_e_valor(nome_arquivo):
-    """Extrai CPF e valor do nome do ficheiro para a lógica de união."""
     match_cpf = re.search(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', nome_arquivo)
     match_valor = re.search(r'R\$\s*([\d\.,]+,\d{2})', nome_arquivo)
     cpf_str = match_cpf.group(1) if match_cpf else None
@@ -240,7 +232,6 @@ def extrair_cpf_e_valor(nome_arquivo):
     return cpf_str, valor_float
 
 def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
-    """Une holerites e comprovantes baseando-se em combinações de valores por CPF."""
     arquivos_finais = {}
     grupos_por_cpf = defaultdict(lambda: {'originais': [], 'recibos': []})
 
@@ -266,7 +257,6 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
                 arquivos_finais[original['nome']] = original['bytes']
                 continue
 
-            # Lógica 1: Correspondência exata de valor
             for recibo in recibos:
                 if not recibo['usado'] and recibo['valor'] is not None and abs(recibo['valor'] - valor_original) < tolerancia:
                     novo_nome = "_UNIDO - " + original['nome'].replace(".pdf", " - RECIBO_COMPROVANTE.pdf")
@@ -285,7 +275,6 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
                     logger.print(f" [SUCESSO] Unido match exato: {novo_nome}")
                     break
 
-            # Lógica 2: Combinação de múltiplos recibos para o mesmo holerite
             if not uniao_realizada:
                 recibos_disponiveis = [r for r in recibos if not r['usado']]
                 melhor_combinacao = None
@@ -328,41 +317,66 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
 st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout="wide")
 st.title("📄 Processador e Unificador de PDFs")
 
-with st.form("upload_form", clear_on_submit=True):
+# ----------------------------------------------------
+# NOVO LAYOUT DE BLOCO ÚNICO SUPERIOR (Mesma altura)
+# ----------------------------------------------------
+col_comp, col_hol, col_compr = st.columns([1, 1.5, 1.5])
+
+with col_comp:
+    st.markdown("### 📅 1. Competência")
+    meses_opcoes = [f"{i:02d}" for i in range(1, 14)] # 01 até 13
+    mes_selecionado = st.selectbox("Mês", options=meses_opcoes, index=None, placeholder="Selecione o Mês...")
     
-    st.markdown("### 📅 1. Selecionar Competência")
-    st.markdown("*(Obrigatório para iniciar o processamento)*")
-    
-    # AQUI ESTÁ A ALTERAÇÃO: Proporção [1, 1, 6] para espremer as caixas em 1/4 do tamanho
-    col_mes, col_ano, col_vazia = st.columns([1, 1, 6])
-    
-    with col_mes:
-        meses_opcoes = [f"{i:02d}" for i in range(1, 14)] # 01 até 13
-        mes_selecionado = st.selectbox("Mês de Competência", options=meses_opcoes, index=None, placeholder="Mês...")
-    with col_ano:
-        anos_opcoes = [str(i) for i in range(2024, 2031)] # 2024 até 2030
-        ano_selecionado = st.selectbox("Ano de Competência", options=anos_opcoes, index=None, placeholder="Ano...")
+    anos_opcoes = [str(i) for i in range(2024, 2031)] # 2024 até 2030
+    ano_selecionado = st.selectbox("Ano", options=anos_opcoes, index=None, placeholder="Selecione o Ano...")
 
-    st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### 📄 2. Enviar Holerites")
-        st.markdown("Arraste PDFs soltos ou um único `.zip`")
-        up_holerites = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="holerites")
+with col_hol:
+    st.markdown("### 📄 2. Holerites")
+    up_holerites = st.file_uploader("Arraste PDFs soltos ou um único .zip", type=["pdf", "zip"], accept_multiple_files=True, key=f"hol_{st.session_state.reset_key}")
 
-    with col2:
-        st.markdown("### 🧾 3. Enviar Comprovantes")
-        st.markdown("Arraste PDFs soltos ou um único `.zip`")
-        up_comprovantes = st.file_uploader("", type=["pdf", "zip"], accept_multiple_files=True, key="comprovantes")
+with col_compr:
+    st.markdown("### 🧾 3. Comprovantes")
+    up_comprovantes = st.file_uploader("Arraste PDFs soltos ou um único .zip", type=["pdf", "zip"], accept_multiple_files=True, key=f"comp_{st.session_state.reset_key}")
 
-    st.markdown("---")
-    submit_button = st.form_submit_button("🚀 Iniciar Processamento", use_container_width=True)
+st.markdown("---")
 
-container_resultados = st.container()
+# ----------------------------------------------------
+# NOVO LAYOUT DE BOTÕES (50% Cada, lado a lado)
+# ----------------------------------------------------
+col_btn_start, col_btn_down = st.columns(2)
 
+with col_btn_start:
+    submit_button = st.button("🚀 Iniciar Processamento", use_container_width=True)
+
+with col_btn_down:
+    # O botão de baixar aparece apenas se houver ZIP gerado, senão mostra botão desativado para manter o design.
+    if st.session_state.processed_zip:
+        st.download_button(
+            label="⬇️ Baixar Arquivos Processados (.zip)",
+            data=st.session_state.processed_zip,
+            file_name="arquivos_processados.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
+    else:
+        st.button("⬇️ Baixar Arquivos Processados (.zip)", disabled=True, use_container_width=True)
+
+# ----------------------------------------------------
+# RENDERIZAÇÃO DE RESULTADOS NA TELA
+# ----------------------------------------------------
+if st.session_state.success_msg:
+    st.success("✨ Processamento concluído com sucesso! \n\n*Os campos de upload acima foram limpos e estão prontos para uma nova execução.*")
+    st.markdown("### 🖥️ Terminal de Processamento")
+    st.code(st.session_state.terminal_log, language="bash")
+
+# ----------------------------------------------------
+# LÓGICA DE EXECUÇÃO
+# ----------------------------------------------------
 if submit_button:
     
+    # Limpa estados de sucesso anteriores para mostrar processamento novo
+    st.session_state.success_msg = False
+    st.session_state.terminal_log = ""
     st.session_state.processed_zip = None
 
     qtd_holerites = len(up_holerites) if up_holerites else 0
@@ -381,7 +395,9 @@ if submit_button:
     
     else:
         st.markdown("### 🖥️ Terminal de Processamento")
-        app_logger = StreamlitLogger()
+        terminal_placeholder = st.empty()
+        app_logger = StreamlitLogger(terminal_placeholder)
+        
         doc_nao_classificadas = fitz.open()
         
         arq_holerites = extrair_pdfs_de_uploads(up_holerites, app_logger) if up_holerites else []
@@ -424,15 +440,11 @@ if submit_button:
                 zip_file.writestr(nome_arquivo, pdf_bytes)
             zip_file.writestr("relatorio_processamento.txt", app_logger.log_text)
 
+        # Atualiza os estados para a limpeza da tela e exibição final
+        st.session_state.terminal_log = app_logger.log_text
         st.session_state.processed_zip = zip_buffer.getvalue()
-
-if st.session_state.processed_zip:
-    with container_resultados:
-        st.success("✨ Processamento concluído com sucesso! \n\n*Os campos de upload acima foram limpos e estão prontos para uma nova execução.*")
-        st.download_button(
-            label="⬇️ Baixar Arquivos Processados (.zip)",
-            data=st.session_state.processed_zip,
-            file_name="arquivos_processados.zip",
-            mime="application/zip",
-            use_container_width=True
-        )
+        st.session_state.success_msg = True
+        st.session_state.reset_key += 1 # O segredo que esvazia as caixas de upload instantaneamente
+        
+        # O Rerun aplica as mudanças visuais na hora!
+        st.rerun()
