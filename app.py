@@ -91,10 +91,10 @@ def extrair_dados_comprovante(texto_pagina):
     return cpf, valor
 
 # ==========================================
-# UTILITÁRIO DE UPLOAD
+# UTILITÁRIO DE UPLOAD BLINDADO
 # ==========================================
 def extrair_pdfs_de_uploads(uploaded_files, logger):
-    """Lê ficheiros PDF soltos ou descompacta ficheiros ZIP."""
+    """Lê ficheiros PDF soltos ou descompacta ficheiros ZIP ignorando ficheiros vazios e ocultos."""
     arquivos_extraidos = []
     for file in uploaded_files:
         if file.name.lower().endswith('.zip'):
@@ -102,12 +102,22 @@ def extrair_pdfs_de_uploads(uploaded_files, logger):
             try:
                 with zipfile.ZipFile(file, 'r') as z:
                     for zip_info in z.infolist():
-                        if zip_info.filename.lower().endswith('.pdf') and not zip_info.filename.startswith('__MACOSX'):
-                            arquivos_extraidos.append((zip_info.filename.split('/')[-1], z.read(zip_info.filename)))
+                        nome_arquivo = zip_info.filename.split('/')[-1]
+                        
+                        # Ignora ficheiros ocultos de Mac (como ._arquivo.pdf) e pastas
+                        if zip_info.filename.lower().endswith('.pdf') and '__MACOSX' not in zip_info.filename and not nome_arquivo.startswith('._'):
+                            pdf_bytes = z.read(zip_info.filename)
+                            
+                            # PROTEÇÃO: Só adiciona se o ficheiro tiver dados (não for vazio)
+                            if len(pdf_bytes) > 0:
+                                arquivos_extraidos.append((nome_arquivo, pdf_bytes))
             except zipfile.BadZipFile:
                 logger.print(f"❌ Erro: O ficheiro '{file.name}' não é um ZIP válido.")
         elif file.name.lower().endswith('.pdf'):
-            arquivos_extraidos.append((file.name, file.read()))
+            pdf_bytes = file.read()
+            # PROTEÇÃO: Só adiciona se o ficheiro tiver dados
+            if len(pdf_bytes) > 0:
+                arquivos_extraidos.append((file.name, pdf_bytes))
     return arquivos_extraidos
 
 # ==========================================
@@ -377,9 +387,7 @@ if submit_button:
         
         holerites_sep = processar_holerites(arq_holerites, app_logger, doc_nao_classificadas) if arq_holerites else {}
         
-        # -------------------------------------------------------------------
         # MAPA DE NOMES E CPFS (LIDOS DIRETAMENTE DOS TÍTULOS DOS HOLERITES)
-        # -------------------------------------------------------------------
         map_cpf_nome = {}
         map_nome_cpf = {}
         for nome_arquivo in holerites_sep.keys():
