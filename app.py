@@ -18,6 +18,7 @@ if "reset_key" not in st.session_state: st.session_state.reset_key = 0
 if "processed_zip" not in st.session_state: st.session_state.processed_zip = None
 if "terminal_log" not in st.session_state: st.session_state.terminal_log = ""
 if "success_msg" not in st.session_state: st.session_state.success_msg = False
+if "error_msg" not in st.session_state: st.session_state.error_msg = ""
 
 # ==========================================
 # CLASSE DE LOG EM TEMPO REAL
@@ -317,8 +318,13 @@ def unir_arquivos_memoria(holerites_dict, comprovantes_dict, logger):
 st.set_page_config(page_title="Processador de Holerites e Comprovantes", layout="wide")
 st.title("📄 Processador e Unificador de PDFs")
 
+# Exibe a mensagem de erro da trava caso exista e a limpa em seguida para não ficar travada na tela
+if st.session_state.error_msg:
+    st.error(st.session_state.error_msg)
+    st.session_state.error_msg = ""
+
 # ----------------------------------------------------
-# NOVO LAYOUT DE BLOCO ÚNICO SUPERIOR (Mesma altura)
+# LAYOUT DE BLOCO ÚNICO SUPERIOR
 # ----------------------------------------------------
 col_comp, col_hol, col_compr = st.columns([1, 1.5, 1.5])
 
@@ -341,7 +347,19 @@ with col_compr:
 st.markdown("---")
 
 # ----------------------------------------------------
-# NOVO LAYOUT DE BOTÕES (50% Cada, lado a lado)
+# TRAVA DE LIMITE DE ARQUIVOS (MAIS DE 50) - Feedback Imediato
+# ----------------------------------------------------
+if (up_holerites and len(up_holerites) > 50) or (up_comprovantes and len(up_comprovantes) > 50):
+    st.session_state.error_msg = (
+        "🛑 **Limite de ficheiros excedido!**\n\n"
+        "Selecionou mais de 50 ficheiros num dos campos. O limite para envio de ficheiros soltos é de **50 PDFs de cada vez**.\n\n"
+        "👉 **O que fazer:** Coloque todos os seus PDFs dentro de uma pasta compactada (**ficheiro .zip**) e faça o upload de apenas **um único ficheiro .zip** na área correspondente!"
+    )
+    st.session_state.reset_key += 1 # Esvazia as caixas de upload
+    st.rerun() # Reinicia a tela instantaneamente para aplicar a limpeza e mostrar o erro
+
+# ----------------------------------------------------
+# LAYOUT DE BOTÕES (50% Cada, lado a lado)
 # ----------------------------------------------------
 col_btn_start, col_btn_down = st.columns(2)
 
@@ -349,7 +367,6 @@ with col_btn_start:
     submit_button = st.button("🚀 Iniciar Processamento", use_container_width=True)
 
 with col_btn_down:
-    # O botão de baixar aparece apenas se houver ZIP gerado, senão mostra botão desativado para manter o design.
     if st.session_state.processed_zip:
         st.download_button(
             label="⬇️ Baixar Arquivos Processados (.zip)",
@@ -374,21 +391,12 @@ if st.session_state.success_msg:
 # ----------------------------------------------------
 if submit_button:
     
-    # Limpa estados de sucesso anteriores para mostrar processamento novo
     st.session_state.success_msg = False
     st.session_state.terminal_log = ""
     st.session_state.processed_zip = None
 
-    qtd_holerites = len(up_holerites) if up_holerites else 0
-    qtd_comprovantes = len(up_comprovantes) if up_comprovantes else 0
-
     if not mes_selecionado or not ano_selecionado:
         st.error("🛑 **Atenção:** É obrigatório selecionar o **Mês** e o **Ano** de Competência na seção 1 para prosseguir!")
-        
-    elif qtd_holerites > 50 or qtd_comprovantes > 50:
-        st.error("🛑 **Limite de ficheiros excedido!**\n\n"
-                 "Selecionou mais de 50 ficheiros num dos campos. O limite para envio de ficheiros soltos é de **50 PDFs de cada vez**.\n\n"
-                 "👉 **O que fazer:** Coloque todos os seus PDFs dentro de uma pasta compactada (**ficheiro .zip**) e faça o upload de apenas **um único ficheiro .zip** na área correspondente!")
     
     elif not up_holerites and not up_comprovantes:
         st.warning("⚠️ Por favor, faça o upload de ficheiros em pelo menos uma das áreas acima para iniciar o processo.")
@@ -440,11 +448,9 @@ if submit_button:
                 zip_file.writestr(nome_arquivo, pdf_bytes)
             zip_file.writestr("relatorio_processamento.txt", app_logger.log_text)
 
-        # Atualiza os estados para a limpeza da tela e exibição final
         st.session_state.terminal_log = app_logger.log_text
         st.session_state.processed_zip = zip_buffer.getvalue()
         st.session_state.success_msg = True
-        st.session_state.reset_key += 1 # O segredo que esvazia as caixas de upload instantaneamente
+        st.session_state.reset_key += 1 
         
-        # O Rerun aplica as mudanças visuais na hora!
         st.rerun()
